@@ -4,7 +4,7 @@ import AppHeader from '@/components/AppHeader.vue'
 import DouyinExtractionColumn from '@/components/DouyinExtractionColumn.vue'
 import ExportColumn from '@/components/ExportColumn.vue'
 import SubtitleRecognitionColumn from '@/components/SubtitleRecognitionColumn.vue'
-import VoiceCloneColumn from '@/components/VoiceCloneColumn.vue'
+import RemixColumn from '@/components/RemixColumn.vue'
 </script>
 
 <template>
@@ -14,7 +14,7 @@ import VoiceCloneColumn from '@/components/VoiceCloneColumn.vue'
     <main class="app-content">
       <section class="column-board" aria-label="功能模块区域">
         <DouyinExtractionColumn />
-        <VoiceCloneColumn />
+        <RemixColumn />
         <SubtitleRecognitionColumn />
         <ExportColumn />
       </section>

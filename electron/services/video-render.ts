@@ -11,9 +11,14 @@
 import { execFile, spawn } from "node:child_process";
 import { existsSync } from "node:fs";
 import { mkdir, unlink, writeFile } from "node:fs/promises";
-import { basename, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { promisify } from "node:util";
 import { app, BrowserWindow } from "electron";
+import {
+  buildEmphasisAss,
+  buildSubtitleAss,
+  isSubtitleTemplateId,
+} from "./subtitle-templates";
 
 const execFileAsync = promisify(execFile);
 
@@ -55,6 +60,8 @@ export interface SubtitleRenderItem {
   start: number;
   end: number;
   text: string;
+  /** 双语模板的英文小字（可选） */
+  subText?: string;
 }
 
 export interface SubtitleRenderStyle {
@@ -82,6 +89,12 @@ export interface VideoRenderPayload {
   videoUrl: string;
   subtitles: SubtitleRenderItem[];
   subtitleStyle: SubtitleRenderStyle;
+  /** 字幕模板 id（见 services/subtitle-templates）；"custom"/空 = 用上面的自定义样式 */
+  subtitleTemplateId?: string;
+  /** 重点花字（画面中央大字强调，独立于字幕烧录） */
+  emphasisItems?: SubtitleRenderItem[];
+  /** 响度统一：导出时 loudnorm 到 -14 LUFS（短视频平台标准） */
+  loudnorm?: boolean;
   pipItems: PipRenderItem[];
   outputPath: string;
   /** 封面图 base64（data:image/...;base64,...），添加为视频首帧 */
@@ -401,7 +414,42 @@ export async function renderVideo(
       await writeFile(coverInputPath, Buffer.from(base64Data, "base64"));
     }
 
-    // 3a. 字幕 drawtext 滤镜（支持多行：每行一个 drawtext，y 坐标逐行上移）
+    // 滤镜参数里的路径转义（字幕模板/花字共用）
+    const escapeFilterPath = (value: string): string =>
+      value
+        .replace(/\\/g, "/")
+        .replace(/:/g, "\\:")
+        .replace(/'/g, "'\\''");
+
+    // 3a. 字幕模板（ASS/libass 烧录）：选了模板时走这条，含描边/底盒/动画/逐字变色
+    let templateBurned = false;
+    if (
+      payload.subtitles.length > 0 &&
+      isSubtitleTemplateId(payload.subtitleTemplateId)
+    ) {
+      const assContent = buildSubtitleAss(
+        payload.subtitles,
+        payload.subtitleTemplateId as string,
+        videoWidth,
+        videoHeight,
+      );
+      if (assContent) {
+        const assDir = getTempDir();
+        await mkdir(assDir, { recursive: true });
+        const assPath = join(assDir, `subtitles-${Date.now()}.ass`);
+        await writeFile(assPath, assContent, "utf-8");
+        const fontsDir = dirname(
+          getFontFilePath(payload.subtitleStyle.fontFileName),
+        );
+        filterParts.push(
+          `subtitles='${escapeFilterPath(assPath)}':fontsdir='${escapeFilterPath(fontsDir)}'`,
+        );
+        templateBurned = true;
+      }
+    }
+
+    // 3a2. 无模板时用 drawtext 按自定义样式烧字幕（支持多行：每行一个 drawtext，y 坐标逐行上移）
+    if (!templateBurned) {
     const fontPath = getFontFilePath(payload.subtitleStyle.fontFileName);
     const fontColor = hexToFfmpegColor(payload.subtitleStyle.color);
     const borderColor = hexToFfmpegColor(payload.subtitleStyle.strokeColor);
@@ -440,6 +488,28 @@ export async function renderVideo(
           `enable='between(t,${subtitle.start.toFixed(3)},${subtitle.end.toFixed(3)})'`,
         ].join(":");
         filterParts.push(drawtextFilter);
+      }
+    }
+    }
+
+    // 3a3. 重点花字（ASS 大字，叠在字幕之后烧）
+    if (payload.emphasisItems?.length) {
+      const emphasisAss = buildEmphasisAss(
+        payload.emphasisItems,
+        videoWidth,
+        videoHeight,
+      );
+      if (emphasisAss) {
+        const emphasisDir = getTempDir();
+        await mkdir(emphasisDir, { recursive: true });
+        const emphasisPath = join(emphasisDir, `emphasis-${Date.now()}.ass`);
+        await writeFile(emphasisPath, emphasisAss, "utf-8");
+        const emphasisFontsDir = dirname(
+          getFontFilePath(payload.subtitleStyle.fontFileName),
+        );
+        filterParts.push(
+          `subtitles='${escapeFilterPath(emphasisPath)}':fontsdir='${escapeFilterPath(emphasisFontsDir)}'`,
+        );
       }
     }
 
@@ -536,7 +606,19 @@ export async function renderVideo(
     args.push("-c:v", "libx264");
     args.push("-preset", "fast");
     args.push("-crf", "23");
-    args.push("-c:a", "copy");
+    if (payload.loudnorm) {
+      // 响度统一：重编码音频并 loudnorm 到 -14 LUFS / 真峰值 -1.5
+      args.push(
+        "-af",
+        "loudnorm=I=-14:TP=-1.5:LRA=11,aresample=48000",
+        "-c:a",
+        "aac",
+        "-b:a",
+        "160k",
+      );
+    } else {
+      args.push("-c:a", "copy");
+    }
     args.push(payload.outputPath);
 
     // 5. 执行 ffmpeg（使用 spawn 实时读取进度，编码阶段映射到 40~99%）

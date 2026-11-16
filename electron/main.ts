@@ -12,13 +12,7 @@ import {
 import { basename, extname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { resolveFfmpegPath } from "./services/_shared/ffmpeg-path";
-import {
-  createCopyMoark,
-  type MoarkCopyCreationPayload as CopyCreationPayload,
-} from "./services/copy-creation-moark";
 import { extractDouyinVideo } from "./services/douyin";
-import type { SubtitleRecognitionResult } from "./services/subtitle-recognition";
-import { recognizeMoarkSubtitles } from "./services/subtitle-recognition-sourcecode";
 import {
   deletePipHistoryEntry,
   listPipHistory,
@@ -33,16 +27,6 @@ import {
   resolveVideoLocalPath,
   type VideoRenderPayload,
 } from "./services/video-render";
-import {
-  listVoices as moarkListVoices,
-  createVoiceProfile as moarkCreateVoiceProfile,
-  updateVoiceProfile as moarkUpdateVoiceProfile,
-  deleteVoiceProfile as moarkDeleteVoiceProfile,
-  getVoiceFilePath as moarkGetVoiceFilePath,
-  synthesizeVoice as moarkSynthesizeVoice,
-  type MoarkCreateVoicePayload,
-  type MoarkUpdateVoicePayload,
-} from "./services/voice-clone-moark";
 import {
   readMoarkAccount,
   writeMoarkAccount,
@@ -61,9 +45,6 @@ const currentDir = fileURLToPath(new URL(".", import.meta.url));
 const moarkAccountConfigFileName = "moark-account-config.json";
 const copyCreationControllers = new Map<number, AbortController>();
 const douyinExtractionControllers = new Map<number, AbortController>();
-const moarkSynthesisControllers = new Map<number, AbortController>();
-const subtitleRecognitionControllers = new Map<number, AbortController>();
-const dedicatedLipSyncControllers = new Map<number, AbortController>();
 
 protocol.registerSchemesAsPrivileged([
   {
@@ -116,50 +97,62 @@ async function saveMoarkAccount(store: MoarkAccountStore): Promise<void> {
 
 // ===== 独享算力对口型配置 =====
 import {
-  readConfig as readDedicatedConfig,
-  writeConfig as writeDedicatedConfig,
-  submitTask as submitDedicatedTask,
-  cancelTask as cancelDedicatedRemoteTask,
-  type DedicatedLipSyncConfig,
-} from "./services/lip-sync-dedicated";
+  createCopyBailian,
+  pickEmphasisSentences,
+  suggestCoverTitles,
+  translateSentences,
+  type BailianCopyCreationPayload as CopyCreationPayload,
+} from "./services/copy-creation-bailian";
+import {
+  concatNarrationAudio,
+  synthesizeAllSentences,
+  synthesizeOneSentence,
+} from "./services/bailian-tts";
+import {
+  composeRemix,
+  downloadBgmTrack,
+  fetchPexelsClip,
+  generateKeywords,
+  pickRandomLocalBgm,
+  scanMaterials,
+  searchBgmTracks,
+  type ComposeBgm,
+  type ComposeOptions,
+  type RemixComposeSegment,
+  type RemixDirs,
+} from "./services/remix";
 
-function getLipSyncDedicatedConfigPath(): string {
-  return join(app.getPath("userData"), "lip-sync-dedicated-config.json");
+/** 混剪缓存（Pexels 下载）与成片目录 */
+function getRemixDirs(): RemixDirs {
+  const root = join(app.getPath("temp"), "free-super-agent");
+  return {
+    cacheDir: join(root, "remix-cache"),
+    resultDir: join(root, "remix-result"),
+    bgmCacheDir: join(root, "bgm-cache"),
+  };
 }
 
-async function loadDedicatedLipSyncConfig(): Promise<DedicatedLipSyncConfig> {
-  return readDedicatedConfig(getLipSyncDedicatedConfigPath());
+/** 合成音频目录：与 local-audio://synthesized/<file> 协议对应 */
+function getSynthesizedAudioDir(): string {
+  return join(app.getPath("temp"), "free-super-agent", "synthesized-audio");
+}
+import {
+  readConfig as readAppConfigFile,
+  writeConfig as writeAppConfigFile,
+  type AppConfig,
+} from "./services/app-config";
+
+// ===== 应用配置（百炼 + 素材） =====
+function getAppConfigPath(): string {
+  return join(app.getPath("userData"), "app-config.json");
 }
 
-async function saveDedicatedLipSyncConfig(
-  config: DedicatedLipSyncConfig,
-): Promise<void> {
-  await writeDedicatedConfig(getLipSyncDedicatedConfigPath(), config);
+async function loadAppConfig(): Promise<AppConfig> {
+  return readAppConfigFile(getAppConfigPath());
 }
 
-async function submitDedicatedLipSyncTask(
-  payload: {
-    audio:
-      | { arrayBuffer: ArrayBuffer; fileName: string; mimeType: string }
-      | { url: string };
-    video: { arrayBuffer: ArrayBuffer; fileName: string; mimeType: string };
-  },
-  sender?: Electron.WebContents,
-  signal?: AbortSignal,
-): Promise<{ outputUrl: string }> {
-  const config = await loadDedicatedLipSyncConfig();
-  return submitDedicatedTask(
-    config,
-    payload,
-    (status) => {
-      try {
-        sender?.send("lipsync-dedicated:status", status);
-      } catch {
-        /* ignore */
-      }
-    },
-    signal,
-  );
+async function saveAppConfig(config: AppConfig): Promise<void> {
+  await writeAppConfigFile(getAppConfigPath(), config);
 }
 
 /**
@@ -232,14 +225,10 @@ async function createRewriteCopy(
   copyCreationControllers.set(webContentsId, controller);
 
   try {
-    const account = await requireMoarkAccount();
+    const appConfig = await loadAppConfig();
 
-    // 文案创作仅支持模力方舟：优先 DeepSeek-R1-Distill-Qwen-14B，失败再用 Qwen3-32B
-    return await createCopyMoark(
-      { apiKey: account.apiKey },
-      payload,
-      controller.signal,
-    );
+    // 文案创作走百炼（配置中心的百炼 API Key），不再依赖模力方舟账户
+    return await createCopyBailian(appConfig, payload, controller.signal);
   } finally {
     if (copyCreationControllers.get(webContentsId) === controller) {
       copyCreationControllers.delete(webContentsId);
@@ -280,23 +269,6 @@ function registerLocalVideoProtocol(): void {
       });
     }
 
-    // 对口型结果视频缓存：local-video://lipsync-result/<fileName>
-    if (requestUrl.hostname === "lipsync-result") {
-      const fileName = basename(
-        decodeURIComponent(requestUrl.pathname.replace(/^\/+/, "")),
-      );
-      if (!fileName) {
-        return new Response("Not found", { status: 404 });
-      }
-      const resultDir = join(
-        app.getPath("temp"),
-        "free-super-agent",
-        "lipsync-result",
-      );
-      return net.fetch(pathToFileURL(join(resultDir, fileName)).href, {
-        headers: request.headers,
-      });
-    }
 
     return new Response("Not found", { status: 404 });
   });
@@ -316,10 +288,6 @@ function registerLocalAudioProtocol(): void {
 
     let filePath = "";
 
-    // 模力方舟音色：local-audio://moark-voices/<fileName>
-    if (requestUrl.hostname === "moark-voices") {
-      filePath = join(app.getPath("userData"), "moark-voices", fileName);
-    }
 
     // 合成音频缓存：local-audio://synthesized/<fileName>
     if (requestUrl.hostname === "synthesized") {
@@ -416,64 +384,7 @@ function registerLocalPipProtocol(): void {
   });
 }
 
-/**
- * 将远程合成音频下载到本地临时目录，返回 local-audio:// 协议 URL
- */
-async function cacheSynthesizedAudio(
-  remoteUrl: string,
-  signal: AbortSignal,
-): Promise<string> {
-  const { mkdir, writeFile } = await import("node:fs/promises");
-  const { randomUUID } = await import("node:crypto");
 
-  const synthesizedDir = join(
-    app.getPath("temp"),
-    "free-super-agent",
-    "synthesized-audio",
-  );
-  await mkdir(synthesizedDir, { recursive: true });
-
-  const response = await fetch(remoteUrl, { signal });
-  if (!response.ok) {
-    throw new Error(`音频下载失败：${response.status}`);
-  }
-
-  const buffer = Buffer.from(await response.arrayBuffer());
-  const ext = remoteUrl.includes(".wav") ? ".wav" : ".mp3";
-  const fileName = `${randomUUID()}${ext}`;
-  const filePath = join(synthesizedDir, fileName);
-  await writeFile(filePath, buffer);
-
-  return `local-audio://synthesized/${encodeURIComponent(fileName)}`;
-}
-
-async function recognizeSubtitles(
-  webContentsId: number,
-  audioUrl: string,
-): Promise<SubtitleRecognitionResult> {
-  const existingController = subtitleRecognitionControllers.get(webContentsId);
-
-  if (existingController) {
-    existingController.abort();
-  }
-
-  const controller = new AbortController();
-  subtitleRecognitionControllers.set(webContentsId, controller);
-
-  try {
-    // 字幕识别仅支持模力方舟，模型固定为 whisper-large-v3（句子级别时间戳）
-    const account = await requireMoarkAccount();
-    return await recognizeMoarkSubtitles(
-      account.apiKey,
-      audioUrl,
-      controller.signal,
-    );
-  } finally {
-    if (subtitleRecognitionControllers.get(webContentsId) === controller) {
-      subtitleRecognitionControllers.delete(webContentsId);
-    }
-  }
-}
 
 function cancelDouyinExtraction(webContentsId: number): boolean {
   const controller = douyinExtractionControllers.get(webContentsId);
@@ -499,17 +410,6 @@ function cancelCopyCreation(webContentsId: number): boolean {
   return true;
 }
 
-function cancelSubtitleRecognition(webContentsId: number): boolean {
-  const controller = subtitleRecognitionControllers.get(webContentsId);
-
-  if (!controller) {
-    return false;
-  }
-
-  controller.abort();
-  subtitleRecognitionControllers.delete(webContentsId);
-  return true;
-}
 
 function createMainWindow(): void {
   const mainWindow = new BrowserWindow({
@@ -559,19 +459,6 @@ app.whenReady().then(() => {
   registerLocalPipProtocol();
 
   ipcMain.handle("app:get-version", () => app.getVersion());
-  ipcMain.handle("app:request-microphone-access", async () => {
-    // macOS 需要通过系统权限请求麦克风访问
-    if (process.platform === "darwin") {
-      const status = systemPreferences.getMediaAccessStatus("microphone");
-      if (status === "granted") return "granted";
-      if (status === "denied") return "denied";
-      // status 为 'not-determined' 时请求权限
-      const granted = await systemPreferences.askForMediaAccess("microphone");
-      return granted ? "granted" : "denied";
-    }
-    // Windows / Linux 不需要系统级权限请求
-    return "granted";
-  });
   // ===== 模力方舟中央账户（配置中心） =====
   ipcMain.handle("moark:get-status", async () => {
     const account = await loadMoarkAccount();
@@ -663,232 +550,152 @@ app.whenReady().then(() => {
       return `local-audio://synthesized/${encodeURIComponent(cachedName)}`;
     },
   );
-  ipcMain.handle("audio:copy-local", async (_event, sourceUrl: string) => {
-    const { mkdir, copyFile } = await import("node:fs/promises");
-    const { randomUUID } = await import("node:crypto");
-
-    // 从 local-audio://synthesized/xxx.mp3 解析出源文件路径
-    if (!sourceUrl.startsWith("local-audio://synthesized/")) {
-      throw new Error("不支持的音频地址格式");
-    }
-    const sourceFileName = decodeURIComponent(
-      new URL(sourceUrl).pathname.replace(/^\/+/, ""),
-    );
-    const synthesizedDir = join(
-      app.getPath("temp"),
-      "free-super-agent",
-      "synthesized-audio",
-    );
-    const sourcePath = join(synthesizedDir, basename(sourceFileName));
-
-    await mkdir(synthesizedDir, { recursive: true });
-    const ext = sourcePath.match(/\.[^.]+$/)?.[0] || ".mp3";
-    const newName = `${randomUUID()}${ext}`;
-    const destPath = join(synthesizedDir, newName);
-    await copyFile(sourcePath, destPath);
-
-    return `local-audio://synthesized/${encodeURIComponent(newName)}`;
-  });
   // 通用音频文件读取（供上传音色样本使用）
-  ipcMain.handle("audio:read-file", async (_event, filePath: string) => {
-    const { readFile: readFileFs } = await import("node:fs/promises");
-    const buffer = await readFileFs(filePath);
-    const lower = filePath.toLowerCase();
-    const mimeType = lower.endsWith(".wav")
-      ? "audio/wav"
-      : lower.endsWith(".ogg")
-        ? "audio/ogg"
-        : lower.endsWith(".m4a") || lower.endsWith(".aac")
-          ? "audio/aac"
-          : lower.endsWith(".flac")
-            ? "audio/flac"
-            : "audio/mpeg";
-    return {
-      arrayBuffer: buffer.buffer.slice(
-        buffer.byteOffset,
-        buffer.byteOffset + buffer.byteLength,
-      ),
-      mimeType,
-    };
-  });
   ipcMain.handle("copy:create", (event, payload: CopyCreationPayload) =>
     createRewriteCopy(event.sender.id, payload),
   );
 
   ipcMain.handle("copy:cancel", (event) => cancelCopyCreation(event.sender.id));
 
-  // ===== 语音克隆：模力方舟（登录/apiKey 统一走配置中心的中央账户） =====
-  ipcMain.handle("voice-moark:list", () =>
-    moarkListVoices(app.getPath("userData")),
-  );
+  // 双语字幕模板：中文逐句翻译成英文字幕（走百炼文本模型）
   ipcMain.handle(
-    "voice-moark:create",
-    (_event, payload: MoarkCreateVoicePayload) =>
-      moarkCreateVoiceProfile(app.getPath("userData"), payload),
+    "subtitle:translate",
+    async (_event, payload: { sentences: string[] }) => {
+      const config = await loadAppConfig();
+      return translateSentences(config, payload?.sentences ?? []);
+    },
   );
+
+  // 重点花字：AI 从字幕里挑要大字强调的句子（走百炼文本模型）
   ipcMain.handle(
-    "voice-moark:update",
-    (_event, payload: MoarkUpdateVoicePayload) =>
-      moarkUpdateVoiceProfile(app.getPath("userData"), payload),
+    "subtitle:pick-emphasis",
+    async (_event, payload: { sentences: string[] }) => {
+      const config = await loadAppConfig();
+      return pickEmphasisSentences(config, payload?.sentences ?? []);
+    },
   );
-  ipcMain.handle("voice-moark:delete", (_event, id: string) =>
-    moarkDeleteVoiceProfile(app.getPath("userData"), id),
-  );
+
+  // 封面标题：AI 按文案提炼候选标题（avoid 为上一批，换一批不重复）
   ipcMain.handle(
-    "voice-moark:save-recording",
-    async (_event, arrayBuffer: ArrayBuffer, mimeType: string) => {
-      const { mkdir: mkdirFs, writeFile: wf } =
-        await import("node:fs/promises");
-      const { randomUUID } = await import("node:crypto");
-      const { execFile } = await import("node:child_process");
-      const { promisify } = await import("node:util");
-      const execFileAsync = promisify(execFile);
-      const tempDir = join(
-        app.getPath("temp"),
-        "free-super-agent",
-        "moark-recordings",
+    "cover:suggest-titles",
+    async (_event, payload: { copyText: string; avoid?: string[] }) => {
+      const config = await loadAppConfig();
+      return suggestCoverTitles(
+        config,
+        payload?.copyText ?? "",
+        payload?.avoid ?? [],
       );
-      await mkdirFs(tempDir, { recursive: true });
-
-      // 先保存原始文件
-      const srcExt = mimeType.includes("wav")
-        ? ".wav"
-        : mimeType.includes("mp3") || mimeType.includes("mpeg")
-          ? ".mp3"
-          : ".webm";
-      const srcPath = join(tempDir, `${randomUUID()}${srcExt}`);
-      await wf(srcPath, Buffer.from(arrayBuffer));
-
-      // 统一用 ffmpeg 转码为标准 mp3（确保编码正确，避免手机录音假 mp3）
-      const mp3Path = join(tempDir, `${randomUUID()}.mp3`);
-      const ffmpegBin = resolveFfmpegPath();
-      await execFileAsync(ffmpegBin, [
-        "-i",
-        srcPath,
-        "-y",
-        "-ar",
-        "44100",
-        "-ac",
-        "1",
-        "-b:a",
-        "128k",
-        mp3Path,
-      ]);
-
-      // 删除原始文件
-      const { unlink } = await import("node:fs/promises");
-      await unlink(srcPath).catch(() => undefined);
-
-      return mp3Path;
     },
   );
-  ipcMain.handle(
-    "voice-moark:synthesize",
-    async (event, payload: { text: string; voiceId: string }) => {
-      const existingController = moarkSynthesisControllers.get(event.sender.id);
-      if (existingController) {
-        existingController.abort();
-      }
 
-      const controller = new AbortController();
-      moarkSynthesisControllers.set(event.sender.id, controller);
-
-      try {
-        const account = await requireMoarkAccount();
-        const config = moarkToRuntimeConfig(account);
-        const voiceFilePath = await moarkGetVoiceFilePath(
-          app.getPath("userData"),
-          payload.voiceId,
-        );
-        const result = await moarkSynthesizeVoice(
-          config,
-          { text: payload.text, voiceFilePath },
-          controller.signal,
-        );
-        // 下载音频到本地缓存，避免远程 URL 过期
-        const localUrl = await cacheSynthesizedAudio(
-          result.audioUrl,
-          controller.signal,
-        );
-        return { audioUrl: localUrl };
-      } finally {
-        if (moarkSynthesisControllers.get(event.sender.id) === controller) {
-          moarkSynthesisControllers.delete(event.sender.id);
-        }
-      }
-    },
-  );
-  ipcMain.handle("voice-moark:cancel-synthesis", (event) => {
-    const controller = moarkSynthesisControllers.get(event.sender.id);
-    if (!controller) return false;
-    controller.abort();
-    moarkSynthesisControllers.delete(event.sender.id);
-    return true;
-  });
+  // ===== 语音克隆：模力方舟（登录/apiKey 统一走配置中心的中央账户） =====
 
   // ===== 视频对口型：独享算力 =====
-  ipcMain.handle("lipsync-dedicated:load-config", () =>
-    loadDedicatedLipSyncConfig(),
-  );
+  // ===== 视频对口型：HeyGen 网页版（半自动） =====
+  // ===== 百炼 TTS 逐句合成 =====
   ipcMain.handle(
-    "lipsync-dedicated:save-config",
-    (_event, config: DedicatedLipSyncConfig) =>
-      saveDedicatedLipSyncConfig(config),
-  );
-  ipcMain.handle(
-    "lipsync-dedicated:submit",
-    async (
-      event,
-      payload: Parameters<typeof submitDedicatedLipSyncTask>[0],
-    ) => {
-      const webContentsId = event.sender.id;
-      const existingController = dedicatedLipSyncControllers.get(webContentsId);
-      if (existingController) {
-        existingController.abort();
-      }
-      const controller = new AbortController();
-      dedicatedLipSyncControllers.set(webContentsId, controller);
-      try {
-        return await submitDedicatedLipSyncTask(
-          payload,
-          event.sender,
-          controller.signal,
-        );
-      } catch (error) {
-        // 用户点击「停止重启」会 abort 本次请求，服务端重启也会导致连接中断，
-        // 这些都属预期，返回取消标记而非抛错，避免主进程打印错误日志、前端弹报错。
-        if (controller.signal.aborted) {
-          return { outputUrl: "", canceled: true };
-        }
-        throw error;
-      } finally {
-        if (dedicatedLipSyncControllers.get(webContentsId) === controller) {
-          dedicatedLipSyncControllers.delete(webContentsId);
-        }
-      }
+    "bailian-tts:synthesize-all",
+    async (_event, payload: { sentences: string[] }) => {
+      const config = await loadAppConfig();
+      return synthesizeAllSentences(
+        config,
+        payload.sentences,
+        getSynthesizedAudioDir(),
+      );
     },
   );
-  ipcMain.handle("lipsync-dedicated:cancel", async (event) => {
-    const controller = dedicatedLipSyncControllers.get(event.sender.id);
-    if (!controller) return false;
-    controller.abort();
-    dedicatedLipSyncControllers.delete(event.sender.id);
-    // 通知独享算力后端取消任务
-    try {
-      const config = await loadDedicatedLipSyncConfig();
-      if (config.baseUrl.trim()) {
-        await cancelDedicatedRemoteTask(config.baseUrl);
-      }
-    } catch {
-      // 后端取消失败不影响前端流程
-    }
-    return true;
-  });
-  ipcMain.handle("subtitle:recognize", (event, audioUrl: string) =>
-    recognizeSubtitles(event.sender.id, audioUrl),
+  ipcMain.handle(
+    "bailian-tts:synthesize-one",
+    async (_event, payload: { text: string }) => {
+      const config = await loadAppConfig();
+      return synthesizeOneSentence(
+        config,
+        payload.text,
+        getSynthesizedAudioDir(),
+      );
+    },
   );
-  ipcMain.handle("subtitle:cancel", (event) =>
-    cancelSubtitleRecognition(event.sender.id),
+  ipcMain.handle(
+    "bailian-tts:concat",
+    async (_event, payload: { fileNames: string[] }) =>
+      concatNarrationAudio(payload.fileNames, getSynthesizedAudioDir()),
+  );
+  // ===== 素材混剪 =====
+  ipcMain.handle(
+    "remix:generate-keywords",
+    async (_event, payload: { sentences: string[] }) => {
+      const config = await loadAppConfig();
+      return generateKeywords(config, payload.sentences);
+    },
+  );
+  ipcMain.handle("remix:scan-materials", async () => {
+    const config = await loadAppConfig();
+    return scanMaterials(config);
+  });
+  ipcMain.handle(
+    "remix:pexels-fetch",
+    async (_event, payload: { query: string; excludeIds: number[] }) => {
+      const config = await loadAppConfig();
+      return fetchPexelsClip(
+        config,
+        payload.query,
+        payload.excludeIds,
+        getRemixDirs(),
+      );
+    },
+  );
+  ipcMain.handle(
+    "remix:compose",
+    async (
+      _event,
+      payload: {
+        segments: RemixComposeSegment[];
+        narrationFileName: string;
+        bgm?: ComposeBgm | null;
+        options?: ComposeOptions;
+      },
+    ) =>
+      composeRemix(
+        payload.segments,
+        join(getSynthesizedAudioDir(), basename(payload.narrationFileName)),
+        getRemixDirs(),
+        payload.bgm ?? null,
+        payload.options,
+      ),
+  );
+  // ===== BGM（在线匹配 Coverr 音乐 + 本地文件） =====
+  ipcMain.handle(
+    "bgm:search",
+    async (_event, payload: { query: string }) => {
+      const config = await loadAppConfig();
+      return searchBgmTracks(config, payload.query);
+    },
+  );
+  ipcMain.handle(
+    "bgm:download",
+    async (_event, payload: { id: string; downloadUrl: string }) =>
+      downloadBgmTrack(payload.id, payload.downloadUrl, getRemixDirs()),
+  );
+  ipcMain.handle("bgm:random-local", async () => {
+    const config = await loadAppConfig();
+    return pickRandomLocalBgm(config);
+  });
+  ipcMain.handle("dialog:select-audio-file", async () => {
+    const result = await dialog.showOpenDialog({
+      properties: ["openFile"],
+      filters: [
+        {
+          name: "音频文件",
+          extensions: ["mp3", "wav", "m4a", "aac", "ogg", "flac"],
+        },
+      ],
+    });
+    return result.canceled ? null : (result.filePaths[0] ?? null);
+  });
+  // ===== 应用配置（百炼 + 素材） =====
+  ipcMain.handle("app-config:load", () => loadAppConfig());
+  ipcMain.handle("app-config:save", (_event, config: AppConfig) =>
+    saveAppConfig(config),
   );
 
   // ===== 画中画历史素材 =====
@@ -1006,29 +813,10 @@ app.whenReady().then(() => {
       return { success: true, outputDir: subDir, ...results };
     },
   );
-  ipcMain.handle("dialog:select-audio-file", async () => {
+  ipcMain.handle("dialog:select-folder", async () => {
     const result = await dialog.showOpenDialog({
-      title: "选择音频文件",
-      filters: [
-        {
-          name: "音频文件",
-          extensions: ["mp3", "wav", "m4a", "aac", "ogg", "flac"],
-        },
-      ],
-      properties: ["openFile"],
-    });
-    if (result.canceled || !result.filePaths.length) {
-      return null;
-    }
-    return result.filePaths[0];
-  });
-  ipcMain.handle("dialog:select-video-file", async () => {
-    const result = await dialog.showOpenDialog({
-      title: "选择视频文件",
-      filters: [
-        { name: "视频文件", extensions: ["mp4", "mov", "mkv", "avi", "webm"] },
-      ],
-      properties: ["openFile"],
+      title: "选择素材库文件夹",
+      properties: ["openDirectory", "createDirectory"],
     });
     if (result.canceled || !result.filePaths.length) {
       return null;

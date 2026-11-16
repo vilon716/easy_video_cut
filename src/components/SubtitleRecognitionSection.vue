@@ -1,6 +1,6 @@
 <script setup lang="ts">
 /**
- * 第五步：字幕时间轴识别（识别控件 + 可编辑字幕列表）
+ * 第五步：字幕（识别控件 + 可编辑字幕列表）
  *
  * 识别（ASR）只依赖第三步的语音音频，结果通过共享 composable
  * 提供给同列的字幕样式 / 画中画以及第七步导出使用。
@@ -68,7 +68,7 @@ watch(
 
 <template>
   <section class="subtitle-recognition-section">
-    <el-divider class="step-divider">第五步：字幕时间轴识别</el-divider>
+    <el-divider class="step-divider">第五步：字幕</el-divider>
 
     <section class="tool-actions">
       <button
@@ -77,7 +77,7 @@ watch(
         :disabled="isRecognizing"
         @click="startSubtitleRecognition"
       >
-        {{ isRecognizing ? '提取中...' : '字幕时间轴提取' }}
+        {{ isRecognizing ? '生成中...' : '生成字幕' }}
       </button>
       <button
         class="secondary-button"
@@ -91,7 +91,7 @@ watch(
 
     <div class="subtitle-meta-row">
       <div class="task-status">状态：{{ subtitleTaskStatus }}</div>
-      <span class="elapsed-badge" aria-label="字幕识别耗时">
+      <span class="elapsed-badge" aria-label="字幕生成耗时">
         <Stopwatch class="elapsed-icon" aria-hidden="true" />
         {{ subtitleElapsedText }}
       </span>
@@ -118,7 +118,7 @@ watch(
           <el-icon class="empty-subtitle-icon" aria-hidden="true">
             <Tickets />
           </el-icon>
-          <span>识别字幕预览</span>
+          <span>字幕预览</span>
         </div>
       </div>
     </section>

@@ -20,7 +20,7 @@ jobs:
         include:
           - label: windows-x64
             os: windows-latest
-            args: --win portable --x64
+            args: --win nsis portable --x64
             glob: dist/*.exe
           - label: macos-arm64
             os: macos-latest

@@ -1,10 +1,8 @@
 import { ElMessage } from "element-plus";
 import { computed, onUnmounted, ref } from "vue";
 import { useWorkflowState } from "@/composables/useWorkflowState";
-import {
-  useMoarkAccount,
-  isMoarkAuthError,
-} from "@/composables/useMoarkAccount";
+import { useMoarkAccount } from "@/composables/useMoarkAccount";
+import { useAppConfig } from "@/composables/useAppConfig";
 import type {
   CopyCreationPayload,
   CopyCreationResult,
@@ -23,7 +21,8 @@ let sharedCopyCreationState: ReturnType<typeof useCopyCreationImpl> | null =
   null;
 
 function useCopyCreationImpl() {
-  const { ensureReady, handleAuthExpired } = useMoarkAccount();
+  const { openConfigCenter } = useMoarkAccount();
+  const appConfig = useAppConfig();
   const rewriteRequirements = ref("");
   const { createdCopyText: createdCopy } = useWorkflowState();
   const isCreatingCopy = ref(false);
@@ -72,7 +71,13 @@ function useCopyCreationImpl() {
       return;
     }
 
-    if (!ensureReady()) {
+    // 文案创作走百炼：没填百炼 Key 时引导去配置中心（不再要求模力方舟授权）
+    if (!appConfig.isLoaded.value) {
+      await appConfig.refreshConfig();
+    }
+    if (!appConfig.hasBailianKey.value) {
+      ElMessage.warning("请先在配置中心填写百炼 API Key");
+      openConfigCenter();
       return;
     }
 
@@ -104,8 +109,9 @@ function useCopyCreationImpl() {
     } catch (error) {
       if (!isCopyCreationCancelled.value) {
         const message = error instanceof Error ? error.message : "文案创作失败";
-        if (isMoarkAuthError(message)) {
-          handleAuthExpired();
+        if (/401|403|api ?key|unauthorized|invalid.*key/i.test(message)) {
+          ElMessage.error("百炼 API Key 可能不正确，请在配置中心检查");
+          openConfigCenter();
         } else {
           ElMessage.error(message);
         }

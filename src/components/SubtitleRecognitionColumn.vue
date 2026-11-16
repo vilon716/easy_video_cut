@@ -15,9 +15,16 @@ import {
   SUBTITLE_STYLE_PRESETS,
   type SubtitleStylePreset,
 } from "@/config/subtitle-style-presets";
+import {
+  CUSTOM_TEMPLATE_ID,
+  DEFAULT_TEMPLATE_ID,
+  SUBTITLE_TEMPLATES,
+} from "@/config/subtitle-templates";
+import { useEmphasis } from "@/composables/useEmphasis";
 
 const {
   effectiveVideoSourceUrl,
+  ensureBilingualTranslations,
   subtitleList,
   updateSubtitleText,
 } = useSubtitleRecognition();
@@ -55,6 +62,50 @@ const subtitleStrokeColor = ref("#000000");
 // 选中字体的 ID（持久化到 localStorage），渲染时再映射到对应的 fontFamily
 const selectedFontId = ref(DEFAULT_SUBTITLE_FONT_ID);
 const isStyleModalOpen = ref(false);
+
+// 字幕模板（与样式一起持久化；custom = 用下方自定义样式）
+const subtitleTemplates = SUBTITLE_TEMPLATES;
+const selectedTemplateId = ref(DEFAULT_TEMPLATE_ID);
+
+// 重点花字（导出时中央大字强调）
+const {
+  items: emphasisItems,
+  isPicking: isPickingEmphasis,
+  pickWithAi,
+  addManual,
+  removeItem: removeEmphasis,
+} = useEmphasis();
+const manualEmphasisIndex = ref(0);
+
+async function handlePickEmphasis(): Promise<void> {
+  try {
+    const count = await pickWithAi();
+    if (count) {
+      ElMessage.success(`AI 挑了 ${count} 句做花字，文案可改`);
+    } else {
+      ElMessage.info("AI 没挑出特别值得强调的句子，可以手动加");
+    }
+  } catch (error) {
+    ElMessage.error(
+      error instanceof Error ? error.message : "AI 挑重点句失败",
+    );
+  }
+}
+
+function handleAddEmphasis(): void {
+  addManual(manualEmphasisIndex.value);
+}
+
+function selectTemplate(id: string): void {
+  selectedTemplateId.value = id;
+  if (id === "bilingual") {
+    void ensureBilingualTranslations().catch((error: unknown) => {
+      ElMessage.error(
+        `英文字幕翻译失败：${error instanceof Error ? error.message : String(error)}`,
+      );
+    });
+  }
+}
 
 const selectedFont = computed(() =>
   getSubtitleFontOption(selectedFontId.value),
@@ -95,6 +146,15 @@ interface SubtitleStyleSummaryRow {
 
 const subtitleStyleSummaryRows = computed<SubtitleStyleSummaryRow[]>(() => {
   const rows: SubtitleStyleSummaryRow[] = [];
+  rows.push({
+    label: "模板",
+    text:
+      selectedTemplateId.value === CUSTOM_TEMPLATE_ID
+        ? "自定义"
+        : (subtitleTemplates.find(
+            (item) => item.id === selectedTemplateId.value,
+          )?.name ?? "自定义"),
+  });
   rows.push({ label: "字体", text: selectedFont.value.label });
   rows.push({ label: "字号", text: `${subtitleFontSize.value}px` });
   rows.push({ label: "字色", colors: [subtitleColor.value] });
@@ -122,7 +182,7 @@ const hasRecognizedSubtitles = computed(() => subtitleRows.value.length > 0);
 
 function ensureSubtitlesReady(): boolean {
   if (!hasRecognizedSubtitles.value) {
-    ElMessage.warning("请先进行字幕识别");
+    ElMessage.warning("请先生成字幕");
     return false;
   }
   return true;
@@ -312,6 +372,7 @@ onMounted(() => {
         fontName: string;
         strokeColor: string;
         strokeSize: number;
+        templateId: string;
       }>;
 
       if (typeof parsedConfig.fontSize === "number") {
@@ -340,6 +401,9 @@ onMounted(() => {
           1,
           Math.max(0, parsedConfig.strokeSize),
         );
+      }
+      if (typeof parsedConfig.templateId === "string") {
+        selectedTemplateId.value = parsedConfig.templateId;
       }
     } catch {
       window.localStorage.removeItem(subtitleStyleStorageKey);
@@ -375,6 +439,7 @@ watch(
     selectedFontId,
     subtitleStrokeSize,
     subtitleStrokeColor,
+    selectedTemplateId,
   ],
   () => {
     window.localStorage.setItem(
@@ -385,6 +450,7 @@ watch(
         fontSize: subtitleFontSize.value,
         strokeColor: subtitleStrokeColor.value,
         strokeSize: subtitleStrokeSize.value,
+        templateId: selectedTemplateId.value,
       }),
     );
   },
@@ -416,7 +482,7 @@ watch(
           class="subtitle-style-icon-button"
           type="button"
           aria-label="字幕样式"
-          :title="hasRecognizedSubtitles ? '字幕样式' : '请先进行字幕识别'"
+          :title="hasRecognizedSubtitles ? '字幕样式' : '请先生成字幕'"
           :disabled="!hasRecognizedSubtitles"
           @click="handleOpenStyleModal"
         >
@@ -456,7 +522,7 @@ watch(
           class="subtitle-style-icon-button"
           type="button"
           aria-label="画中画"
-          :title="hasRecognizedSubtitles ? '画中画' : '请先进行字幕识别'"
+          :title="hasRecognizedSubtitles ? '画中画' : '请先生成字幕'"
           :disabled="!hasRecognizedSubtitles"
           @click="handleOpenPipModal"
         >
@@ -502,6 +568,57 @@ watch(
           </div>
         </div>
       </div>
+
+      <div class="emphasis-entry">
+        <div class="emphasis-head">
+          <span class="emphasis-title">重点花字</span>
+          <button
+            type="button"
+            class="ui-ai-btn"
+            :disabled="!hasRecognizedSubtitles || isPickingEmphasis"
+            @click="handlePickEmphasis"
+          >
+            {{ isPickingEmphasis ? "挑选中…" : "AI 挑重点句" }}
+          </button>
+        </div>
+        <p class="emphasis-hint">
+          导出时在画面中央弹大字强调，适合价格、数字、结论句。
+        </p>
+        <div
+          v-for="item in emphasisItems"
+          :key="item.id"
+          class="emphasis-row"
+        >
+          <span class="emphasis-seg">第{{ item.segmentIndex + 1 }}句</span>
+          <input
+            v-model="item.text"
+            class="ui-input emphasis-input"
+            type="text"
+            maxlength="12"
+          />
+          <button
+            type="button"
+            class="ui-mini-btn"
+            @click="removeEmphasis(item.id)"
+          >
+            删
+          </button>
+        </div>
+        <div v-if="hasRecognizedSubtitles" class="emphasis-add">
+          <select v-model.number="manualEmphasisIndex" class="ui-select">
+            <option
+              v-for="(row, idx) in subtitleList"
+              :key="row.id"
+              :value="idx"
+            >
+              第{{ idx + 1 }}句
+            </option>
+          </select>
+          <button type="button" class="ui-mini-btn" @click="handleAddEmphasis">
+            手动加一句
+          </button>
+        </div>
+      </div>
     </div>
 
     <PictureInPictureModal
@@ -539,6 +656,53 @@ watch(
           <div class="style-modal-body">
             <section class="style-modal-config">
               <div class="style-panel">
+                <div class="style-field style-field-inline style-template-field">
+                  <span>模板</span>
+                  <div
+                    class="template-chip-row"
+                    role="radiogroup"
+                    aria-label="字幕模板"
+                  >
+                    <button
+                      v-for="tpl in subtitleTemplates"
+                      :key="tpl.id"
+                      type="button"
+                      class="template-chip"
+                      :class="{
+                        'is-active': selectedTemplateId === tpl.id,
+                      }"
+                      role="radio"
+                      :aria-checked="selectedTemplateId === tpl.id"
+                      :title="tpl.desc"
+                      @click="selectTemplate(tpl.id)"
+                    >
+                      {{ tpl.name }}
+                    </button>
+                    <button
+                      type="button"
+                      class="template-chip"
+                      :class="{
+                        'is-active': selectedTemplateId === 'custom',
+                      }"
+                      role="radio"
+                      :aria-checked="selectedTemplateId === 'custom'"
+                      title="用下面的预设/字体/字号/描边自定义"
+                      @click="selectTemplate('custom')"
+                    >
+                      自定义
+                    </button>
+                  </div>
+                </div>
+                <p
+                  v-if="selectedTemplateId !== 'custom'"
+                  class="template-hint"
+                >
+                  已选模板：导出时按模板效果烧录字幕，下面的预设/字体/字号/描边不生效。<span
+                    v-if="selectedTemplateId === 'bilingual'"
+                    >双语模板会在生成字幕时自动翻译英文小字。</span
+                  >
+                </p>
+
                 <label
                   class="style-field style-field-inline style-preset-field"
                 >
@@ -663,7 +827,7 @@ watch(
                   </article>
                 </div>
                 <div v-else class="style-subtitle-empty">
-                  暂无字幕数据，请先在第五步完成字幕时间轴识别
+                  暂无字幕数据，请先在第五步生成字幕
                 </div>
               </div>
             </section>
@@ -1323,6 +1487,92 @@ watch(
   display: flex;
   gap: 8px;
   flex-wrap: wrap;
+}
+
+.emphasis-entry {
+  margin-top: 14px;
+  padding: 12px;
+  border: 1px solid #e2e8f0;
+  border-radius: 10px;
+  background: #ffffff;
+}
+
+.emphasis-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.emphasis-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: #18212f;
+}
+
+.emphasis-hint {
+  margin: 6px 0 8px;
+  font-size: 12px;
+  color: #64748b;
+}
+
+.emphasis-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 6px;
+}
+
+.emphasis-seg {
+  font-size: 12px;
+  color: #64748b;
+  white-space: nowrap;
+}
+
+.emphasis-input {
+  flex: 1;
+  min-width: 0;
+  font-weight: 600;
+}
+
+.emphasis-add {
+  display: flex;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.template-chip-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.template-chip {
+  padding: 5px 12px;
+  border: 1px solid #dcdfe6;
+  border-radius: 999px;
+  background: #ffffff;
+  color: #41546b;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.template-chip:hover {
+  border-color: #2a6f97;
+  color: #2a6f97;
+}
+
+.template-chip.is-active {
+  border-color: #2a6f97;
+  background: #2a6f97;
+  color: #ffffff;
+  font-weight: 600;
+}
+
+.template-hint {
+  margin: 2px 0 8px;
+  font-size: 12px;
+  line-height: 1.5;
+  color: #c77414;
 }
 
 .style-preset-chip {

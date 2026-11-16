@@ -5,9 +5,11 @@
  * 一次授权（登录 + 自动获取访问令牌），四步功能即可全部使用。
  */
 import { Select, Loading, RefreshRight, SwitchButton } from '@element-plus/icons-vue'
+import { ElMessage } from 'element-plus'
 import { useMoarkAccount } from '@/composables/useMoarkAccount'
+import { useAppConfig, type AppConfigState } from '@/composables/useAppConfig'
 
-import { computed } from 'vue'
+import { computed, ref, watch } from 'vue'
 
 const {
   loggedIn,
@@ -42,6 +44,38 @@ const quotaPercent = computed(() => {
 
 /** 剩余次数偏低时用警示色（少于 20%） */
 const isQuotaLow = computed(() => hasQuota.value && quotaPercent.value < 20)
+
+// ── 百炼与素材配置（与模力方舟账户相互独立）──
+const {
+  config: savedAppConfig,
+  isSaving: isSavingSettings,
+  refreshConfig: refreshAppConfig,
+  saveConfig: saveAppConfig,
+} = useAppConfig()
+
+const draft = ref<AppConfigState>({ ...savedAppConfig.value })
+
+// 每次打开配置中心时拉取最新已存配置并同步到草稿
+watch(isConfigCenterOpen, (open) => {
+  if (!open) return
+  void refreshAppConfig().then(() => {
+    draft.value = { ...savedAppConfig.value }
+  })
+})
+
+async function pickMaterialsDir(): Promise<void> {
+  const picked = await window.desktopApi.selectFolder()
+  if (picked) draft.value.materialsDir = picked
+}
+
+async function saveSettings(): Promise<void> {
+  try {
+    await saveAppConfig({ ...draft.value })
+    ElMessage.success('百炼与素材配置已保存')
+  } catch {
+    ElMessage.error('配置保存失败，请重试')
+  }
+}
 </script>
 
 <template>
@@ -143,8 +177,88 @@ const isQuotaLow = computed(() => hasQuota.value && quotaPercent.value < 20)
           </div>
 
           <p class="cc-foot">
-            授权登录后，即可解锁文案创作、语音克隆、字幕识别等AI能力
+            模力方舟授权用于抖音文案提取；文案改写、配音与混剪用下方百炼配置
           </p>
+
+          <div class="cfg-divider"><span>百炼与素材</span></div>
+
+          <div class="cfg-form">
+            <label class="cfg-field">
+              <span>百炼 API Key</span>
+              <input
+                v-model="draft.bailianApiKey"
+                type="password"
+                placeholder="粘贴百炼工作空间的 API Key"
+                autocomplete="off"
+              />
+            </label>
+            <label class="cfg-field">
+              <span>百炼接口地址</span>
+              <input
+                v-model="draft.bailianBaseUrl"
+                type="text"
+                placeholder="https://<工作空间>.cn-beijing.maas.aliyuncs.com"
+              />
+            </label>
+            <label class="cfg-field">
+              <span>文案模型</span>
+              <input
+                v-model="draft.bailianTextModel"
+                type="text"
+                placeholder="kimi-k3.1-pro"
+              />
+            </label>
+            <label class="cfg-field">
+              <span>Pexels API Key</span>
+              <input
+                v-model="draft.pexelsApiKey"
+                type="password"
+                placeholder="免费申请：pexels.com/api（混剪联网素材）"
+                autocomplete="off"
+              />
+            </label>
+            <label class="cfg-field">
+              <span>Pixabay API Key（备用）</span>
+              <input
+                v-model="draft.pixabayApiKey"
+                type="password"
+                placeholder="免费申请：pixabay.com/api/docs（Pexels 不通时自动切换）"
+                autocomplete="off"
+              />
+            </label>
+            <label class="cfg-field">
+              <span>Coverr API Key（备用 2）</span>
+              <input
+                v-model="draft.coverrApiKey"
+                type="password"
+                placeholder="免费申请：coverr.co/developers（前面不通时自动切换）"
+                autocomplete="off"
+              />
+            </label>
+            <div class="cfg-field">
+              <span>本地素材库文件夹</span>
+              <div class="cfg-folder-row">
+                <input
+                  :value="draft.materialsDir"
+                  type="text"
+                  readonly
+                  placeholder="未选择（混剪的本地素材来源）"
+                />
+                <button class="cfg-pick" type="button" @click="pickMaterialsDir">
+                  选择
+                </button>
+              </div>
+            </div>
+            <button
+              class="cc-primary cfg-save"
+              type="button"
+              :disabled="isSavingSettings"
+              @click="saveSettings"
+            >
+              {{ isSavingSettings ? '保存中…' : '保存百炼与素材配置' }}
+            </button>
+            <p class="cfg-note">Key 只保存在本机，不经过任何第三方服务器。</p>
+          </div>
         </section>
       </div>
     </transition>
@@ -498,5 +612,111 @@ const isQuotaLow = computed(() => hasQuota.value && quotaPercent.value < 20)
 .cc-fade-enter-from,
 .cc-fade-leave-to {
   opacity: 0;
+}
+
+/* ── 百炼与素材配置 ── */
+.cc-modal {
+  max-height: calc(100vh - 40px);
+  overflow-y: auto;
+}
+
+.cfg-divider {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 22px 0 14px;
+  color: #8296a8;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 1px;
+}
+
+.cfg-divider::before,
+.cfg-divider::after {
+  content: '';
+  flex: 1;
+  height: 1px;
+  background: #e2eaf1;
+}
+
+.cfg-form {
+  display: grid;
+  gap: 12px;
+  text-align: left;
+}
+
+.cfg-field {
+  display: grid;
+  gap: 6px;
+}
+
+.cfg-field > span {
+  color: #4a5a6b;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.cfg-field input {
+  width: 100%;
+  height: 38px;
+  padding: 0 12px;
+  border: 1px solid #d5e1ec;
+  border-radius: 9px;
+  background: #ffffff;
+  color: #18212f;
+  font-size: 13px;
+  outline: none;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+  box-sizing: border-box;
+}
+
+.cfg-field input:focus {
+  border-color: #2a6f97;
+  box-shadow: 0 0 0 3px rgba(42, 111, 151, 0.14);
+}
+
+.cfg-field input[readonly] {
+  background: #f4f8fb;
+  color: #64748b;
+}
+
+.cfg-folder-row {
+  display: flex;
+  gap: 8px;
+}
+
+.cfg-folder-row input {
+  flex: 1;
+  min-width: 0;
+}
+
+.cfg-pick {
+  flex: none;
+  height: 38px;
+  padding: 0 16px;
+  border: 1px solid #d5e6f2;
+  border-radius: 9px;
+  color: #2a6f97;
+  background: #eef5fb;
+  font-size: 13px;
+  font-weight: 700;
+  cursor: pointer;
+  transition: background 0.15s ease;
+}
+
+.cfg-pick:hover {
+  background: #e3eff8;
+}
+
+.cfg-save {
+  margin-top: 2px;
+}
+
+.cfg-note {
+  margin: 0;
+  color: #94a3b8;
+  font-size: 11px;
+  line-height: 1.6;
+  text-align: center;
 }
 </style>

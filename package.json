@@ -2,7 +2,7 @@
   "name": "free-super-agent",
   "version": "1.0.1",
   "private": true,
-  "description": "超级IP智能体 - 开源免费版",
+  "description": "彭哥速剪辑",
   "author": "武沛齐",
   "type": "module",
   "main": "./out/main/index.js",
@@ -15,7 +15,7 @@
   },
   "build": {
     "appId": "com.free-super-agent.desktop",
-    "productName": "免费超级IP智能体",
+    "productName": "彭哥速剪辑",
     "electronVersion": "42.0.1",
     "directories": {
       "output": "dist",
@@ -40,8 +40,14 @@
       }
     ],
     "win": {
-      "icon": "build/icon.ico",
+      "icon": "build/icon.png",
       "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        },
         {
           "target": "portable",
           "arch": [
@@ -50,11 +56,16 @@
         }
       ]
     },
+    "nsis": {
+      "artifactName": "PengGe-v${version}-win-x64-setup.exe",
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true
+    },
     "portable": {
-      "artifactName": "SuperAgent-v${version}-win-x64.exe"
+      "artifactName": "PengGe-v${version}-win-x64.exe"
     },
     "mac": {
-      "icon": "build/icon.icns",
+      "icon": "build/icon.png",
       "category": "public.app-category.productivity",
       "extendInfo": {
         "NSMicrophoneUsageDescription": "需要访问麦克风以录制语音克隆音色样本",
@@ -62,7 +73,7 @@
       }
     },
     "dmg": {
-      "artifactName": "SuperAgent-v${version}-mac-${arch}.dmg"
+      "artifactName": "PengGe-v${version}-mac-${arch}.dmg"
     },
     "asar": true,
     "asarUnpack": [

@@ -3,6 +3,7 @@ import { ElDivider, ElMessage } from 'element-plus'
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useSubtitleRecognition } from '@/composables/useSubtitleRecognition'
 import { usePictureInPicture } from '@/composables/usePictureInPicture'
+import { useEmphasis } from '@/composables/useEmphasis'
 import { SUBTITLE_FONT_OPTIONS, getSubtitleFontOption } from '@/config/subtitle-fonts'
 
 const {
@@ -11,6 +12,7 @@ const {
 } = useSubtitleRecognition()
 
 const { assets: pipAssets } = usePictureInPicture()
+const { items: emphasisItems } = useEmphasis()
 
 const subtitleStyleStorageKey = 'free-super-agent.subtitle-style'
 
@@ -20,7 +22,7 @@ function readSubtitleStyle() {
     if (!stored) return null
     return JSON.parse(stored) as Partial<{
       fontId: string; fontSize: number; fontColor: string
-      strokeSize: number; strokeColor: string
+      strokeSize: number; strokeColor: string; templateId: string
     }>
   } catch { return null }
 }
@@ -32,6 +34,7 @@ const canRender = computed(() => hasVideo.value)
 
 // ── 第六步：渲染导出视频 ──────────────────────────────────
 const isRendering = ref(false)
+const loudnormEnabled = ref(true)
 const renderProgress = ref(0)
 const renderOutputPath = ref('')
 const renderSuccess = ref(false)
@@ -72,7 +75,7 @@ async function handleExportAll(): Promise<void> {
   // 只要有视频就能导出：字幕、字幕样式、画中画、封面都是可选的，
   // 未完成的部分直接跳过（例如只做了对口型 → 导出无字幕视频）
   if (!hasVideo.value) {
-    ElMessage.warning('请先完成第四步视频对口型')
+    ElMessage.warning('请先完成第四步素材混剪')
     return
   }
 
@@ -98,7 +101,7 @@ async function handleExportAll(): Promise<void> {
     // 过滤掉被清空的字幕段；未做字幕识别时为空数组
     const subtitles = subtitleList.value
       .filter((item) => item.text.trim())
-      .map((item) => ({ start: item.start, end: item.end, text: item.text }))
+      .map((item) => ({ start: item.start, end: item.end, text: item.text, subText: item.subText ?? '' }))
 
     const pipItems = pipAssets.value.map((asset) => {
       const matched = subtitleList.value.filter((sub) => asset.subtitleIds.includes(sub.id))
@@ -111,12 +114,17 @@ async function handleExportAll(): Promise<void> {
 
     // 只有配置了字幕或画中画，才需要额外渲染一个成品视频；
     // 否则只导出对口型原视频（原视频始终导出）
-    const needsRender = subtitles.length > 0 || pipItems.length > 0
+    const needsRender = subtitles.length > 0 || pipItems.length > 0 || emphasisItems.value.some((item) => item.text.trim())
 
     const videoPayload: Record<string, unknown> | null = needsRender
       ? {
           videoUrl,
           subtitles,
+          subtitleTemplateId: style?.templateId ?? 'classic',
+          emphasisItems: emphasisItems.value
+            .filter((item) => item.text.trim())
+            .map((item) => ({ start: item.start, end: item.end, text: item.text })),
+          loudnorm: loudnormEnabled.value,
           subtitleStyle: {
             fontFileName: fontOption.fileName,
             fontSize: style?.fontSize ?? 10,
@@ -169,7 +177,7 @@ async function handleExportAll(): Promise<void> {
 }
 
 // ── 第六步：标题封面 ──────────────────────────────────────
-type CoverStyleId = 'bottom-gradient' | 'center-emphasis' | 'top-banner'
+type CoverStyleId = 'bottom-gradient' | 'center-emphasis' | 'top-banner' | 'big-outline' | 'top-title' | 'red-banner'
 
 const coverFontFamily = computed(() => {
   const opt = SUBTITLE_FONT_OPTIONS.find((f) => f.id === coverFontId.value)
@@ -179,11 +187,41 @@ const coverFontFamily = computed(() => {
 const coverStyles = [
   { id: 'bottom-gradient' as CoverStyleId, label: '黄底标题',  description: '黄色色带，白字黑描边居中' },
   { id: 'center-emphasis' as CoverStyleId, label: '居中强调',  description: '半透明遮罩，大字居中' },
-  { id: 'top-banner'      as CoverStyleId, label: '蓝调渐变', description: '蓝色渐变条，左侧橙色竖线' }
+  { id: 'top-banner'      as CoverStyleId, label: '蓝调渐变', description: '蓝色渐变条，左侧橙色竖线' },
+  { id: 'big-outline'     as CoverStyleId, label: '大字描边', description: '无色带，黄字粗黑边，大字居中' },
+  { id: 'top-title'       as CoverStyleId, label: '顶部大字', description: '顶部压暗渐变，白字左上' },
+  { id: 'red-banner'      as CoverStyleId, label: '红底条幅', description: '底部红带，白字居中' }
 ]
 
 const selectedStyleId = ref<CoverStyleId>('bottom-gradient')
 const coverTitle = ref('')
+const titleCandidates = ref<string[]>([])
+const isSuggestingTitles = ref(false)
+
+async function handleSuggestTitles(): Promise<void> {
+  const source = subtitleList.value.map((item) => item.text).join('')
+  if (!source.trim()) {
+    ElMessage.warning('先完成文案和字幕，再来提炼标题')
+    return
+  }
+  isSuggestingTitles.value = true
+  try {
+    const result = await window.desktopApi.suggestCoverTitles({
+      copyText: source,
+      avoid: titleCandidates.value
+    })
+    if (!Array.isArray(result) || !result.length) {
+      throw new Error('没提炼出标题，再试一次')
+    }
+    titleCandidates.value = result.filter(
+      (item): item is string => typeof item === 'string' && Boolean(item.trim())
+    )
+  } catch (error) {
+    ElMessage.error(error instanceof Error ? error.message : '提炼标题失败')
+  } finally {
+    isSuggestingTitles.value = false
+  }
+}
 const coverFontId = ref('msyhbd')   // 默认微软雅黑粗体
 const coverFontSize = ref(10)       // 预览字号（px），导出时等比放大
 const coverFrameDataUrl = ref('')
@@ -483,10 +521,83 @@ async function buildCoverDataUrl(): Promise<string | null> {
     })
   }
 
+  // 大字描边：无色带，黄字粗黑边，居中偏下
+  function drawBigOutline(): void {
+    const fontSize = Math.round(exportFontSize * 1.7)
+    ctx.font = 'bold ' + fontSize + 'px ' + fontFamily
+    const lines = wrapTextLines(ctx, title, W * 0.92)
+    const lineH = fontSize * 1.28
+    let y = H * 0.64 - (lines.length * lineH) / 2
+    ctx.textAlign = 'center'
+    ctx.textBaseline = 'middle'
+    ctx.lineJoin = 'round'
+    for (const line of lines) {
+      ctx.lineWidth = Math.max(6, fontSize / 7)
+      ctx.strokeStyle = 'rgba(0,0,0,0.92)'
+      ctx.strokeText(line, W / 2, y + lineH / 2)
+      ctx.fillStyle = '#ffd21f'
+      ctx.fillText(line, W / 2, y + lineH / 2)
+      y += lineH
+    }
+  }
+
+  // 顶部大字：顶部渐变压暗，白字左上 + 橙色竖线
+  function drawTopTitle(): void {
+    const grad = ctx.createLinearGradient(0, 0, 0, H * 0.5)
+    grad.addColorStop(0, 'rgba(0,0,0,0.78)')
+    grad.addColorStop(1, 'rgba(0,0,0,0)')
+    ctx.fillStyle = grad
+    ctx.fillRect(0, 0, W, H * 0.5)
+    const fontSize = Math.round(exportFontSize * 1.45)
+    ctx.font = 'bold ' + fontSize + 'px ' + fontFamily
+    const lines = wrapTextLines(ctx, title, W * 0.82)
+    const lineH = fontSize * 1.32
+    ctx.fillStyle = '#ff6b2b'
+    ctx.fillRect(64, 96, 12, lines.length * lineH)
+    ctx.textAlign = 'left'
+    ctx.textBaseline = 'middle'
+    ctx.fillStyle = '#ffffff'
+    ctx.shadowColor = 'rgba(0,0,0,0.45)'
+    ctx.shadowBlur = 6
+    lines.forEach((line, i) => {
+      ctx.fillText(line, 104, 96 + lineH * i + lineH / 2)
+    })
+    ctx.shadowBlur = 0
+  }
+
+  // 红底条幅：底部红带，白字居中
+  function drawRedBanner(): void {
+    const bandH = H * 0.3
+    const bandY = H - bandH
+    const grad = ctx.createLinearGradient(0, bandY, 0, H)
+    grad.addColorStop(0, '#e62e04')
+    grad.addColorStop(1, '#b71c02')
+    ctx.fillStyle = grad
+    ctx.fillRect(0, bandY, W, bandH)
+    const fontSize = Math.round(exportFontSize * 1.4)
+    ctx.font = 'bold ' + fontSize + 'px ' + fontFamily
+    const lines = wrapTextLines(ctx, title, W * 0.9)
+    const lineH = fontSize * 1.32
+    let y = bandY + (bandH - lines.length * lineH) / 2
+    ctx.textAlign = 'center'
+    ctx.textBaseline = 'middle'
+    ctx.fillStyle = '#ffffff'
+    for (const line of lines) {
+      ctx.fillText(line, W / 2, y + lineH / 2)
+      y += lineH
+    }
+  }
+
   if (style === 'bottom-gradient') {
     drawBand(['rgba(180,130,10,0.92)', 'rgba(248,179,0,0.88)'], '#c0392b')
   } else if (style === 'center-emphasis') {
     drawBand(['rgba(26,26,46,0.94)', 'rgba(45,45,78,0.90)'], '#00b894')
+  } else if (style === 'big-outline') {
+    drawBigOutline()
+  } else if (style === 'top-title') {
+    drawTopTitle()
+  } else if (style === 'red-banner') {
+    drawRedBanner()
   } else {
     drawBand(['rgba(26,58,92,0.92)', 'rgba(42,111,151,0.85)'], '#ff6b2b')
   }
@@ -538,10 +649,26 @@ async function buildCoverDataUrl(): Promise<string | null> {
                 <span class="cover-style-text" :style="{ fontFamily: coverFontFamily, fontSize: `${coverFontSize}px` }">{{ coverTitle || '封面标题' }}</span>
               </div>
             </template>
-            <template v-else>
+            <template v-else-if="style.id === 'top-banner'">
               <div class="cover-style3-band">
                 <span class="cover-style3-accent"></span>
                 <span class="cover-style-text" :style="{ fontFamily: coverFontFamily, fontSize: `${coverFontSize}px` }">{{ coverTitle || '封面标题' }}</span>
+              </div>
+            </template>
+            <template v-else-if="style.id === 'big-outline'">
+              <div class="cover-style4-wrap">
+                <span class="cover-style-text cover-style4-text" :style="{ fontFamily: coverFontFamily, fontSize: `${coverFontSize * 1.7}px` }">{{ coverTitle || '封面标题' }}</span>
+              </div>
+            </template>
+            <template v-else-if="style.id === 'top-title'">
+              <div class="cover-style5-wrap">
+                <span class="cover-style5-accent"></span>
+                <span class="cover-style-text cover-style5-text" :style="{ fontFamily: coverFontFamily, fontSize: `${coverFontSize * 1.4}px` }">{{ coverTitle || '封面标题' }}</span>
+              </div>
+            </template>
+            <template v-else-if="style.id === 'red-banner'">
+              <div class="cover-style6-band">
+                <span class="cover-style-text cover-style6-text" :style="{ fontFamily: coverFontFamily, fontSize: `${coverFontSize * 1.35}px` }">{{ coverTitle || '封面标题' }}</span>
               </div>
             </template>
           </div>
@@ -620,17 +747,30 @@ async function buildCoverDataUrl(): Promise<string | null> {
         <span class="cover-field-label">封面标题</span>
         <textarea v-model="coverTitle" class="cover-input cover-title-textarea" rows="2" placeholder="输入封面标题（支持换行）"></textarea>
       </label>
+      <div class="cover-ai-row">
+        <button type="button" class="ui-ai-btn" :disabled="isSuggestingTitles" @click="handleSuggestTitles">
+          {{ isSuggestingTitles ? '提炼中…' : (titleCandidates.length ? '换一批' : 'AI 提炼标题') }}
+        </button>
+        <span class="cover-ai-hint">点下面的标题直接填入，不满意就换一批</span>
+      </div>
+      <div v-if="titleCandidates.length" class="cover-ai-candidates">
+        <button v-for="cand in titleCandidates" :key="cand" type="button" class="ui-chip-btn" @click="coverTitle = cand">{{ cand }}</button>
+      </div>
 
       <!-- 导出封面（已移至第七步统一导出） -->
 
       <el-divider class="step-divider">第七步：导出</el-divider>
 
       <section class="render-section">
+        <label class="loudnorm-row">
+          <input v-model="loudnormEnabled" type="checkbox" />
+          <span>响度统一（-14 LUFS，平台标准音量）</span>
+        </label>
         <button
           class="primary-button render-video-button"
           type="button"
           :disabled="!canRender || isRendering"
-          :title="canRender ? '一键导出' : '请先完成第四步视频对口型'"
+          :title="canRender ? '一键导出' : '请先完成第四步素材混剪'"
           @click="handleExportAll"
         >
           {{ isRendering ? '导出中...' : '一键导出' }}
@@ -669,16 +809,8 @@ async function buildCoverDataUrl(): Promise<string | null> {
       <div class="beta-notice">
         <p class="beta-title">🧪 联系作者</p>
         <p class="beta-desc">欢迎反馈Bug与建议，帮助我们持续优化。</p>
-        <p class="beta-contact">作者：武沛齐</p>
-        <p class="beta-contact">微信：<span class="beta-wechat">wupeiqi5555</span></p>
-        <p class="beta-contact">
-          官方：<a
-            class="beta-link"
-            href="https://github.com/wupeiqi/free_super_agent"
-            target="_blank"
-            rel="noreferrer"
-          >https://github.com/wupeiqi/free_super_agent</a>
-        </p>
+        <p class="beta-contact">作者：老彭胡叨叨</p>
+        <p class="beta-contact">微信：<span class="beta-wechat">PWL716</span></p>
       </div>
     </div>
 
@@ -998,6 +1130,52 @@ async function buildCoverDataUrl(): Promise<string | null> {
   margin-right: 10px;
   background: #ff6b2b;
   border-radius: 0 2px 2px 0;
+}
+
+
+/* 预设4：大字描边（无色带，黄字黑边居中偏下） */
+.cover-style4-wrap {
+  position: absolute; left: 0; right: 0; bottom: 16%;
+  display: flex; justify-content: center;
+  padding: 0 4%; z-index: 2;
+}
+.cover-style4-text {
+  flex: none; text-align: center; color: #ffd21f;
+  -webkit-text-stroke: 1px rgba(0,0,0,0.92);
+  text-shadow: 0 2px 6px rgba(0,0,0,0.55);
+}
+
+/* 预设5：顶部大字（顶部渐变压暗） */
+.cover-style5-wrap {
+  position: absolute; left: 0; right: 0; top: 0;
+  padding: 10% 6% 24%;
+  background: linear-gradient(180deg, rgba(0,0,0,0.78) 0%, rgba(0,0,0,0) 100%);
+  display: flex; align-items: stretch; gap: 8px; z-index: 2;
+}
+.cover-style5-accent {
+  flex: 0 0 4px; background: #ff6b2b; border-radius: 2px;
+}
+.cover-style5-text { text-align: left; }
+
+/* 预设6：红底条幅（底部红带白字居中） */
+.cover-style6-band {
+  position: absolute; left: 0; right: 0; bottom: 0; height: 30%;
+  background: linear-gradient(180deg, #e62e04 0%, #b71c02 100%);
+  display: flex; align-items: center; justify-content: center;
+  padding: 0 5%; z-index: 2;
+}
+.cover-style6-text { flex: none; text-align: center; }
+
+.cover-ai-row {
+  display: flex; align-items: center; gap: 10px; margin-top: 8px;
+}
+.cover-ai-hint { font-size: 12px; color: #64748b; }
+.cover-ai-candidates {
+  display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px;
+}
+.loudnorm-row {
+  display: flex; align-items: center; gap: 8px;
+  font-size: 12px; color: #64748b; margin-bottom: 10px; cursor: pointer;
 }
 
 /* 三种预设共用文字样式 */

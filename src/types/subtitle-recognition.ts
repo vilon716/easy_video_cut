@@ -12,6 +12,8 @@ export interface SubtitleSegment {
   id: string;
   start: number;
   text: string;
+  /** 双语模板的英文小字（生成字幕时自动翻译填充，可为空） */
+  subText?: string;
 }
 
 export interface SubtitleRecognitionResult {

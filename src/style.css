@@ -103,6 +103,85 @@ a {
   background: #235e80;
 }
 
+/* ===== 统一按钮与控件方案（全应用共用，浅色系） =====
+   主按钮 .primary-button（蓝实心）/ 次按钮 .secondary-button（白底灰边）沿用上方；
+   下面是小尺寸场景的统一件：AI 动作、胶囊候选、小按钮、下拉与输入框。 */
+.ui-ai-btn {
+  height: 30px;
+  padding: 0 14px;
+  border: 1px solid #bcd9ee;
+  border-radius: 999px;
+  background: #eef5fb;
+  color: #2a6f97;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.ui-ai-btn:hover:not(:disabled) {
+  background: #e0eefb;
+}
+
+.ui-ai-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.ui-chip-btn {
+  padding: 5px 12px;
+  border: 1px solid #dcdfe6;
+  border-radius: 999px;
+  background: #ffffff;
+  color: #41546b;
+  font-size: 12px;
+  cursor: pointer;
+  text-align: left;
+}
+
+.ui-chip-btn:hover {
+  border-color: #2a6f97;
+  color: #2a6f97;
+}
+
+.ui-mini-btn {
+  height: 28px;
+  padding: 0 10px;
+  border: 1px solid #cbd5e1;
+  border-radius: 6px;
+  background: #ffffff;
+  color: #41546b;
+  font-size: 12px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.ui-mini-btn:hover:not(:disabled) {
+  background: #f5f7fa;
+}
+
+.ui-mini-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.ui-input,
+.ui-select {
+  height: 32px;
+  padding: 0 10px;
+  border: 1px solid #cbd5e1;
+  border-radius: 6px;
+  background: #ffffff;
+  color: #18212f;
+  font-size: 13px;
+}
+
+.ui-input:focus,
+.ui-select:focus {
+  outline: none;
+  border-color: #2a6f97;
+}
+
 @media (max-width: 640px) {
   .app-content {
     padding: 10px;

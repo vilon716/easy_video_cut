@@ -2,7 +2,6 @@ declare global {
   interface Window {
     desktopApi: {
       getAppVersion: () => Promise<string>;
-      requestMicrophoneAccess: () => Promise<string>;
 
       // 模力方舟中央账户（配置中心）
       moarkGetStatus: () => Promise<unknown>;
@@ -14,42 +13,67 @@ declare global {
       extractDouyinCopy: (douyinUrl: string) => Promise<unknown>;
       cancelDouyinExtraction: () => Promise<boolean>;
 
-      // 音频缓存
-      cacheSynthesizedAudio: (
-        arrayBuffer: ArrayBuffer,
-        fileName: string,
-      ) => Promise<unknown>;
-      copyLocalAudio: (sourceUrl: string) => Promise<unknown>;
-      readAudioFile: (filePath: string) => Promise<unknown>;
 
       // 文案创作
       createRewriteCopy: (payload: unknown) => Promise<unknown>;
       cancelCopyCreation: () => Promise<boolean>;
 
-      // 语音克隆 - 模力方舟（音色管理）
-      listMoarkVoices: () => Promise<unknown>;
-      createMoarkVoice: (payload: unknown) => Promise<unknown>;
-      updateMoarkVoice: (payload: unknown) => Promise<unknown>;
-      deleteMoarkVoice: (id: string) => Promise<unknown>;
-      saveMoarkRecording: (
-        arrayBuffer: ArrayBuffer,
-        mimeType: string,
-      ) => Promise<unknown>;
-      synthesizeMoarkVoice: (payload: unknown) => Promise<unknown>;
-      cancelMoarkVoiceSynthesis: () => Promise<boolean>;
+      // 百炼 TTS 逐句合成
+      synthesizeBailianTtsAll: (payload: {
+        sentences: string[];
+      }) => Promise<unknown>;
+      synthesizeBailianTtsOne: (payload: { text: string }) => Promise<unknown>;
+      concatBailianNarration: (payload: {
+        fileNames: string[];
+      }) => Promise<unknown>;
 
-      // 视频对口型 - 独享算力
-      loadLipSyncDedicatedConfig: () => Promise<unknown>;
-      saveLipSyncDedicatedConfig: (config: unknown) => Promise<void>;
-      submitLipSyncDedicatedTask: (payload: unknown) => Promise<unknown>;
-      cancelLipSyncDedicatedTask: () => Promise<boolean>;
-      onLipSyncDedicatedStatus: (
-        callback: (status: string) => void,
-      ) => () => void;
+      // 双语字幕翻译
+      translateSubtitles: (payload: {
+        sentences: string[];
+      }) => Promise<unknown>;
 
-      // 字幕识别
-      recognizeSubtitles: (audioUrl: string) => Promise<unknown>;
-      cancelSubtitleRecognition: () => Promise<boolean>;
+      // 重点花字 / 封面标题
+      pickEmphasis: (payload: {
+        sentences: string[];
+      }) => Promise<unknown>;
+      suggestCoverTitles: (payload: {
+        copyText: string;
+        avoid?: string[];
+      }) => Promise<unknown>;
+
+      // 素材混剪
+      generateRemixKeywords: (payload: {
+        sentences: string[];
+      }) => Promise<unknown>;
+      scanRemixMaterials: () => Promise<unknown>;
+      fetchRemixPexelsClip: (payload: {
+        query: string;
+        excludeIds: number[];
+      }) => Promise<unknown>;
+      composeRemix: (payload: {
+        segments: unknown[];
+        narrationFileName: string;
+        bgm?: { filePath: string; volume: number } | null;
+        options?: {
+          transition?: string;
+          fillMode?: string;
+          introText?: string;
+          outroText?: string;
+        };
+      }) => Promise<unknown>;
+      // BGM
+      searchBgmTracks: (payload: { query: string }) => Promise<unknown>;
+      downloadBgmTrack: (payload: {
+        id: string;
+        downloadUrl: string;
+      }) => Promise<unknown>;
+      selectAudioFile: () => Promise<string | null>;
+      pickRandomLocalBgm: () => Promise<unknown>;
+
+      // 应用配置（百炼 + 素材）
+      loadAppConfig: () => Promise<unknown>;
+      saveAppConfig: (config: unknown) => Promise<void>;
+      selectFolder: () => Promise<string | null>;
 
       // 画中画（本地上传素材 + 历史）
       listPipHistory: () => Promise<unknown>;
@@ -61,8 +85,6 @@ declare global {
 
       // 视频渲染 + 导出
       exportAll: (options: unknown) => Promise<unknown>;
-      selectAudioFile: () => Promise<string | null>;
-      selectVideoFile: () => Promise<string | null>;
       selectVideoRenderOutput: () => Promise<string | null>;
       renderVideo: (payload: unknown) => Promise<unknown>;
       captureVideoFilmstrip: (

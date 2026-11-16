@@ -8,10 +8,10 @@ const { isReady, openConfigCenter } = useMoarkAccount()
 
 <template>
   <header class="app-header">
-    <div class="project-brand" aria-label="超级IP智能体（开源免费版）">
-      <span class="brand-mark">IP</span>
+    <div class="project-brand" aria-label="彭哥速剪辑">
+      <span class="brand-mark">彭哥</span>
       <div class="brand-copy">
-        <div class="project-name">超级IP智能体（开源免费版 v1.0.2）</div>
+        <div class="project-name">彭哥速剪辑 v1.0.2</div>
       </div>
     </div>
 

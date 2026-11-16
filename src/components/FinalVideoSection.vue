@@ -1,28 +1,30 @@
 <script setup lang="ts">
+/**
+ * 成片预览：展示成片槽位里的最新成片（当前由第四步混剪生成）。
+ */
 import { computed } from 'vue'
 import { VideoCamera } from '@element-plus/icons-vue'
-import { useLipSyncRuntime } from '@/composables/lip-sync-runtime/useLipSyncRuntime'
+import { useFinalVideo } from '@/composables/useFinalVideo'
 
-// 视频对口型当前仅支持独享算力，结果统一取自共享运行时
-const lipSyncState = useLipSyncRuntime()
+const finalVideo = useFinalVideo()
 
-const hasResult = computed(() => lipSyncState.hasResult.value)
-const resultVideoUrl = computed(() => lipSyncState.resultVideoUrl.value)
+const hasResult = computed(() => finalVideo.hasResult.value)
+const resultVideoUrl = computed(() => finalVideo.resultVideoUrl.value)
 </script>
 
 <template>
-  <section class="lip-sync-result-section">
+  <section class="final-video-section">
     <video v-if="hasResult" class="result-video" :src="resultVideoUrl" controls autoplay></video>
     <div v-else class="empty-result">
       <VideoCamera class="empty-result-icon" aria-hidden="true" />
-      <span>对口型视频预览</span>
+      <span>成片预览</span>
     </div>
 
   </section>
 </template>
 
 <style scoped>
-.lip-sync-result-section {
+.final-video-section {
   height: 280px;
   flex: 0 0 280px;
   min-height: 0;

@@ -1,29 +1,28 @@
 <script setup lang="ts">
 /**
- * 第三步：语音克隆合成 + 第四步：视频对口型
+ * 第三步：AI 配音（百炼逐句合成） + 第四步：素材混剪
  *
- * 语音克隆仅支持模力方舟。模型 API Key 与登录统一在右上角【配置中心】完成。
- * 对口型直接消费第三步合成的语音音频，故放在本列下方。
+ * 配音走百炼（配置中心的百炼与素材），逐句合成并拼成完整旁白。
+ * 混剪按逐句时长配画面并合上旁白，成片写入成片槽位由下方预览，
+ * 故两步放在同一列。
  */
 import { ElDivider } from 'element-plus'
-import VoiceCloneMoarkSection from '@/components/voice-clone-moark/VoiceCloneMoarkSection.vue'
-import VideoLipSyncSection from '@/components/VideoLipSyncSection.vue'
-import VideoLipSyncResultColumn from '@/components/VideoLipSyncResultColumn.vue'
-import { useVoiceCloneActive } from '@/composables/useVoiceClone'
-
-// 第四步视频对口型需要第三步语音合成的音频
-const { synthesizedAudioUrl } = useVoiceCloneActive()
+import BailianTtsSection from '@/components/bailian-tts/BailianTtsSection.vue'
+import RemixSection from '@/components/remix/RemixSection.vue'
+import BgmSection from '@/components/remix/BgmSection.vue'
+import FinalVideoSection from '@/components/FinalVideoSection.vue'
 </script>
 
 <template>
   <article class="feature-column">
     <div class="column-body voice-tool">
-      <el-divider class="step-divider">第三步：语音克隆合成</el-divider>
+      <el-divider class="step-divider">第三步：AI 配音</el-divider>
 
-      <VoiceCloneMoarkSection />
+      <BailianTtsSection />
 
-      <VideoLipSyncSection :voice-audio-url="synthesizedAudioUrl" />
-      <VideoLipSyncResultColumn />
+      <RemixSection />
+      <BgmSection />
+      <FinalVideoSection />
     </div>
   </article>
 </template>
@@ -56,9 +55,9 @@ const { synthesizedAudioUrl } = useVoiceCloneActive()
   overflow-y: auto;
 }
 
-/* 第四步对口型结果预览撑满剩余空间，使本列底边与其他列对齐；
+/* 成片预览撑满剩余空间，使本列底边与其他列对齐；
  * flex-basis 用 0，避免生成视频后被视频原始高度撑爆本列。 */
-.voice-tool :deep(.lip-sync-result-section) {
+.voice-tool :deep(.final-video-section) {
   flex: 1 1 0;
   min-height: 240px;
 }
