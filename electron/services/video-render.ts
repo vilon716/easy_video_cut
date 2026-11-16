@@ -610,7 +610,7 @@ export async function renderVideo(
       // 响度统一：重编码音频并 loudnorm 到 -14 LUFS / 真峰值 -1.5
       args.push(
         "-af",
-        "loudnorm=I=-14:TP=-1.5:LRA=11,aresample=48000",
+        "aformat=channel_layouts=stereo,loudnorm=I=-14:TP=-1.5:LRA=11,aresample=48000,aformat=channel_layouts=stereo",
         "-c:a",
         "aac",
         "-b:a",

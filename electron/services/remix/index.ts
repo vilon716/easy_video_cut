@@ -988,6 +988,8 @@ export async function composeRemix(
     const segmentPath = join(dirs.resultDir, `seg-${runId}-${i}.mp4`);
 
     // 转场：每段首尾短淡化（经黑/闪白），总时长不变、与旁白字幕不错位
+    // 注意：fade 按帧时间戳判断，滤镜链头加 setpts=PTS-STARTPTS 把时间戳归零，
+    // 配合输入侧 -ss（见 commonArgs），淡入淡出才落在每段自己的首尾
     let fadeVf = "";
     if (transition === "fade" || transition === "flash") {
       const d = Math.min(0.2, targetSec / 3);
@@ -1000,10 +1002,12 @@ export async function composeRemix(
       "-y",
       "-stream_loop",
       "-1",
-      "-i",
-      segment.filePath,
+      // -ss 必须放输入侧：放输出侧时掐帧发生在滤镜之后，fade 会按未掐的
+      // 时间轴提前淡出、把整段压黑（实测踩过，本地长素材几乎全军覆没）
       "-ss",
       startSec,
+      "-i",
+      segment.filePath,
       "-t",
       targetSec.toFixed(3),
     ];
@@ -1020,7 +1024,7 @@ export async function composeRemix(
     if (useBlurFill) {
       // 虚化填充：背景放大裁满+强模糊压暗，前景按原比例完整显示居中
       const graph =
-        "split[fa][fb];" +
+        "setpts=PTS-STARTPTS,split[fa][fb];" +
         "[fa]scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,gblur=sigma=42,eq=brightness=-0.12[fbg];" +
         "[fb]scale=1080:1920:force_original_aspect_ratio=decrease[ffg];" +
         `[fbg][ffg]overlay=(W-w)/2:(H-h)/2${fadeVf},fps=30,setsar=1[vout]`;
@@ -1036,7 +1040,7 @@ export async function composeRemix(
       await runFfmpeg([
         ...commonArgs,
         "-vf",
-        `scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,fps=30,setsar=1${fadeVf}`,
+        `setpts=PTS-STARTPTS,scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,fps=30,setsar=1${fadeVf}`,
         ...encodeArgs,
       ]);
     }

@@ -864,6 +864,13 @@ watch(
               </div>
             </section>
           </div>
+
+          <footer class="style-modal-footer">
+            <span class="style-modal-footer-hint">点选即自动保存，模板在导出时生效</span>
+            <button class="primary-button" type="button" @click="closeStyleModal">
+              完成
+            </button>
+          </footer>
         </section>
       </div>
     </teleport>
@@ -1458,6 +1465,21 @@ watch(
   grid-template-columns: 500px 320px;
   gap: 0;
   flex: 1;
+}
+
+.style-modal-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 18px;
+  border-top: 1px solid #e2e8f0;
+  background: #ffffff;
+}
+
+.style-modal-footer-hint {
+  color: #64748b;
+  font-size: 12px;
 }
 
 .style-modal-config {

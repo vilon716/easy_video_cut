@@ -208,7 +208,7 @@ async function handleSuggestTitles(): Promise<void> {
   try {
     const result = await window.desktopApi.suggestCoverTitles({
       copyText: source,
-      avoid: titleCandidates.value
+      avoid: [...titleCandidates.value]
     })
     if (!Array.isArray(result) || !result.length) {
       throw new Error('没提炼出标题，再试一次')

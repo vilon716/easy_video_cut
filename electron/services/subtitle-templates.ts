@@ -111,9 +111,10 @@ export function buildEmphasisAss(
     "[Events]",
     "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text",
   ];
+  // 花字 118px 大字：一行最多 8 字，长短语断成两行居中，也避免冲出屏幕
   const events = valid.map(
     (item) =>
-      `Dialogue: 0,${formatAssTime(item.start)},${formatAssTime(item.end)},E,,0,0,0,,{\\fad(120,160)\\t(0,180,\\fscx116\\fscy116)\\t(180,340,\\fscx100\\fscy100)}${escapeAssText(item.text.trim())}`,
+      `Dialogue: 0,${formatAssTime(item.start)},${formatAssTime(item.end)},E,,0,0,0,,{\\fad(120,160)\\t(0,180,\\fscx116\\fscy116)\\t(180,340,\\fscx100\\fscy100)}${wrapTextLines(item.text.trim(), 8).map(escapeAssText).join("\\N")}`,
   );
   return [...header, ...events].join("\n");
 }
@@ -138,13 +139,85 @@ function escapeAssText(text: string): string {
     .replace(/\r?\n/g, "\\N");
 }
 
-/** 卡拉OK：逐字 \kf，按字数均分这句的时长（厘秒） */
-function karaokeText(text: string, durationSec: number): string {
+/** 行首禁则：这些标点不能落在一行开头，断行时并入上一行 */
+const NO_LINE_START = "，。！？；、）】」』%…·";
+
+/**
+ * 计算每行字数（断行点）：libass 对无空格的中文长句不会自动断行
+ * （WrapStyle 0/2 实测都不断），必须在生成 ASS 时按字数手动插入 \N。
+ */
+function lineBreakCounts(chars: string[], maxChars: number): number[] {
+  const counts: number[] = [];
+  let i = 0;
+  while (i < chars.length) {
+    let end = Math.min(i + maxChars, chars.length);
+    while (end < chars.length && NO_LINE_START.includes(chars[end])) end++;
+    counts.push(end - i);
+    i = end;
+  }
+  return counts.length ? counts : [chars.length];
+}
+
+/** 中文按字数断行（每行 ≤ maxChars 字），返回断好的行 */
+function wrapTextLines(text: string, maxChars: number): string[] {
+  const chars = [...text];
+  if (chars.length <= maxChars) return [text];
+  const lines: string[] = [];
+  let i = 0;
+  for (const count of lineBreakCounts(chars, maxChars)) {
+    lines.push(chars.slice(i, i + count).join(""));
+    i += count;
+  }
+  return lines;
+}
+
+/** 英文按词断行（双语模板的小字用） */
+function wrapWords(text: string, maxChars: number): string[] {
+  const words = text.split(/\s+/).filter(Boolean);
+  if (!words.length) return [text];
+  const lines: string[] = [];
+  let current = "";
+  for (const word of words) {
+    if (word.length > maxChars) {
+      if (current) {
+        lines.push(current);
+        current = "";
+      }
+      for (let i = 0; i < word.length; i += maxChars) {
+        lines.push(word.slice(i, i + maxChars));
+      }
+      continue;
+    }
+    const next = current ? `${current} ${word}` : word;
+    if (next.length > maxChars && current) {
+      lines.push(current);
+      current = word;
+    } else {
+      current = next;
+    }
+  }
+  if (current) lines.push(current);
+  return lines.length ? lines : [text];
+}
+
+/** 卡拉OK：逐字 \kf，按字数均分这句的时长（厘秒）；长句按行断开，\N 不占字时 */
+function karaokeText(
+  text: string,
+  durationSec: number,
+  maxChars: number,
+): string {
   const chars = [...text.replace(/\s/g, "")];
   if (!chars.length) return escapeAssText(text);
   const totalCs = Math.max(chars.length, Math.round(durationSec * 100));
   const per = Math.max(1, Math.floor(totalCs / chars.length));
-  return chars.map((char) => `{\\kf${per}}${escapeAssText(char)}`).join("");
+  const tagged = chars.map((char) => `{\\kf${per}}${escapeAssText(char)}`);
+  const lines: string[] = [];
+  let i = 0;
+  for (const count of lineBreakCounts(chars, maxChars)) {
+    lines.push(tagged.slice(i, i + count).join(""));
+    i += count;
+  }
+  return lines.join("\\N");
 }
 
 /**
@@ -185,25 +258,37 @@ export function buildSubtitleAss(
     "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text",
   ];
 
+  // 每行字数：可用宽 = 1080 参考宽 − 左右边距 80，按模板字号（含字距）折算
+  const maxChars = Math.max(
+    6,
+    Math.floor(1000 / (spec.fontSize + spec.spacing)),
+  );
+  const wrapMain = (value: string): string =>
+    wrapTextLines(value, maxChars).map(escapeAssText).join("\\N");
+
   const events = items.map((item) => {
     const raw = item.text.trim();
     let text: string;
     if (spec.effect === "karaoke") {
-      text = karaokeText(raw, item.end - item.start);
+      text = karaokeText(raw, item.end - item.start, maxChars);
     } else if (spec.effect === "pop") {
       text =
         "{\\fad(150,80)\\t(0,200,\\fscx118\\fscy118)\\t(200,380,\\fscx100\\fscy100)}" +
-        escapeAssText(raw);
+        wrapMain(raw);
     } else if (spec.effect === "neon") {
-      text = "{\\blur3}" + escapeAssText(raw);
+      text = "{\\blur3}" + wrapMain(raw);
     } else if (spec.effect === "bilingual" && item.subText?.trim()) {
       const subSize = Math.max(20, Math.round(fontSize * 0.56));
-      text =
-        escapeAssText(raw) +
-        `\\N{\\fs${subSize}\\c&HD9D9D9&}` +
-        escapeAssText(item.subText.trim());
+      const maxSubChars = Math.max(
+        16,
+        Math.floor(1000 / (spec.fontSize * 0.56 * 0.5)),
+      );
+      const sub = wrapWords(item.subText.trim(), maxSubChars)
+        .map(escapeAssText)
+        .join("\\N");
+      text = wrapMain(raw) + `\\N{\\fs${subSize}\\c&HD9D9D9&}` + sub;
     } else {
-      text = escapeAssText(raw);
+      text = wrapMain(raw);
     }
     return `Dialogue: 0,${formatAssTime(item.start)},${formatAssTime(item.end)},T,,0,0,0,,${text}`;
   });
