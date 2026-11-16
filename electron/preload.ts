@@ -20,8 +20,19 @@ const desktopApi = {
     sentences: string[];
   }): Promise<unknown> =>
     ipcRenderer.invoke("bailian-tts:synthesize-all", payload),
-  synthesizeBailianTtsOne: (payload: { text: string }): Promise<unknown> =>
+  synthesizeBailianTtsOne: (payload: {
+    text: string;
+    voice?: string;
+  }): Promise<unknown> =>
     ipcRenderer.invoke("bailian-tts:synthesize-one", payload),
+  importBailianUserAudio: (payload: {
+    sourcePath: string;
+  }): Promise<unknown> =>
+    ipcRenderer.invoke("bailian-tts:import-file", payload),
+  saveBailianRecording: (payload: {
+    dataBase64: string;
+  }): Promise<unknown> =>
+    ipcRenderer.invoke("bailian-tts:save-recording", payload),
   concatBailianNarration: (payload: {
     fileNames: string[];
   }): Promise<unknown> => ipcRenderer.invoke("bailian-tts:concat", payload),

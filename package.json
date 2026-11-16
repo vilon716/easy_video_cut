@@ -68,7 +68,7 @@
       "icon": "build/icon.png",
       "category": "public.app-category.productivity",
       "extendInfo": {
-        "NSMicrophoneUsageDescription": "需要访问麦克风以录制语音克隆音色样本",
+        "NSMicrophoneUsageDescription": "需要访问麦克风以录制你的配音",
         "NSLocalNetworkUsageDescription": "需要访问本地网络以连接你自行部署的视频对口型算力服务"
       }
     },

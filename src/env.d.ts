@@ -22,7 +22,16 @@ declare global {
       synthesizeBailianTtsAll: (payload: {
         sentences: string[];
       }) => Promise<unknown>;
-      synthesizeBailianTtsOne: (payload: { text: string }) => Promise<unknown>;
+      synthesizeBailianTtsOne: (payload: {
+        text: string;
+        voice?: string;
+      }) => Promise<unknown>;
+      importBailianUserAudio: (payload: {
+        sourcePath: string;
+      }) => Promise<unknown>;
+      saveBailianRecording: (payload: {
+        dataBase64: string;
+      }) => Promise<unknown>;
       concatBailianNarration: (payload: {
         fileNames: string[];
       }) => Promise<unknown>;

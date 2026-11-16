@@ -22,6 +22,8 @@ export interface TtsSentenceState {
   fileName: string;
   audioUrl: string;
   durationMs: number;
+  /** 这一句的声音来源：AI 合成 / 用户自己的录音（导入或软件内录制） */
+  source: "ai" | "user";
 }
 
 export interface SentenceTiming {
@@ -86,6 +88,8 @@ function useImpl() {
   const sentences = ref<TtsSentenceState[]>([]);
   const narration = ref<BailianNarrationResult | null>(null);
   const isSynthesizing = ref(false);
+  /** 配音来源模式：ai = 百炼逐句合成；mine = 用户逐句上传/录制自己的声音 */
+  const voiceSource = ref<"ai" | "mine">("ai");
 
   const narrationAudioUrl = computed(() => narration.value?.audioUrl ?? "");
   const totalDurationMs = computed(() =>
@@ -131,9 +135,24 @@ function useImpl() {
       fileName: "",
       audioUrl: "",
       durationMs: 0,
+      source: "ai",
     }));
     narration.value = null;
     return true;
+  }
+
+  /** 只清空 AI 合成的句子（切换音色后调用；用户自己的录音不受影响） */
+  function resetAiSynthesis(): void {
+    let cleared = false;
+    sentences.value.forEach((s) => {
+      if (s.source !== "ai") return;
+      s.status = "idle";
+      s.fileName = "";
+      s.audioUrl = "";
+      s.durationMs = 0;
+      cleared = true;
+    });
+    if (cleared) narration.value = null;
   }
 
   /** 清空已合成结果（切换音色后调用，旧音色的音频不能再用） */
@@ -143,6 +162,7 @@ function useImpl() {
       s.fileName = "";
       s.audioUrl = "";
       s.durationMs = 0;
+      s.source = "ai";
     });
     narration.value = null;
   }
@@ -195,6 +215,7 @@ function useImpl() {
         row.fileName = result.fileName;
         row.audioUrl = result.audioUrl;
         row.durationMs = result.durationMs;
+        row.source = "ai";
       }
       if (!allDone.value) {
         throw new Error("部分句子未合成成功");
@@ -228,6 +249,7 @@ function useImpl() {
       row.fileName = result.fileName;
       row.audioUrl = result.audioUrl;
       row.durationMs = result.durationMs;
+      row.source = "ai";
       if (allDone.value) {
         await concatNarration();
       } else {
@@ -241,6 +263,78 @@ function useImpl() {
     }
   }
 
+  /** 把一段用户自己的录音（导入/录制的结果）挂到某一句上 */
+  async function attachUserAudio(
+    index: number,
+    result: unknown,
+  ): Promise<void> {
+    const row = sentences.value[index];
+    if (!row) return;
+    if (!isSentenceResult(result)) {
+      throw new Error("录音处理结果异常");
+    }
+    row.status = "done";
+    row.fileName = result.fileName;
+    row.audioUrl = result.audioUrl;
+    row.durationMs = result.durationMs;
+    row.source = "user";
+    if (allDone.value) {
+      await concatNarration();
+      ElMessage.success("配音已全部就位，旁白拼接完成");
+    } else {
+      narration.value = null;
+    }
+  }
+
+  /** 「我的配音」：给某一句选一个本地录音文件导入 */
+  async function importUserAudioFor(index: number): Promise<void> {
+    const row = sentences.value[index];
+    if (!row || row.status === "synthesizing") return;
+    const sourcePath = await window.desktopApi.selectAudioFile();
+    if (!sourcePath) return;
+    row.status = "synthesizing";
+    try {
+      const result = await window.desktopApi.importBailianUserAudio({
+        sourcePath,
+      });
+      await attachUserAudio(index, result);
+    } catch (error) {
+      row.status = "error";
+      ElMessage.error(
+        error instanceof Error
+          ? error.message
+          : `第 ${index + 1} 句录音导入失败`,
+      );
+    }
+  }
+
+  /** 「我的配音」：把软件内录好的音频（Blob）保存到某一句 */
+  async function saveRecordingFor(index: number, blob: Blob): Promise<void> {
+    const row = sentences.value[index];
+    if (!row || row.status === "synthesizing") return;
+    row.status = "synthesizing";
+    try {
+      const buffer = await blob.arrayBuffer();
+      const bytes = new Uint8Array(buffer);
+      let binary = "";
+      const CHUNK = 0x8000;
+      for (let i = 0; i < bytes.length; i += CHUNK) {
+        binary += String.fromCharCode(...bytes.subarray(i, i + CHUNK));
+      }
+      const result = await window.desktopApi.saveBailianRecording({
+        dataBase64: btoa(binary),
+      });
+      await attachUserAudio(index, result);
+    } catch (error) {
+      row.status = "error";
+      ElMessage.error(
+        error instanceof Error
+          ? error.message
+          : `第 ${index + 1} 句录音保存失败`,
+      );
+    }
+  }
+
   return {
     sentences,
     narration,
@@ -249,10 +343,14 @@ function useImpl() {
     allDone,
     timings,
     isSynthesizing,
+    voiceSource,
     loadFromCopy,
     synthesizeAll,
     synthesizeSentence,
     resetSynthesis,
+    resetAiSynthesis,
+    importUserAudioFor,
+    saveRecordingFor,
   };
 }
 

@@ -273,6 +273,10 @@ function statusLabel(status: string): string {
   margin: 0;
   padding: 0;
   list-style: none;
+  /* 句子多时列表自己滚动，别把下面的按钮推到很远 */
+  max-height: 460px;
+  overflow-y: auto;
+  padding-right: 2px;
 }
 
 .remix-row {

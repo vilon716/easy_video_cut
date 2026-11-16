@@ -1,27 +1,38 @@
 <script setup lang="ts">
 /**
- * 第三步：AI 配音（百炼逐句合成）
+ * 第三步：配音（两种来源）
  *
- * 文案分句 → 逐句合成 → 拼成完整旁白。每句时长即后续混剪的分镜时长，
- * 单句可单独重合成。音色在本步下拉切换（切换后需重新合成），
- * 列表外的音色 ID 可在配置中心（百炼与素材）里填。
+ * AI 配音：文案分句 → 百炼逐句合成 → 拼成完整旁白。音色在选择面板里挑
+ * （全量 88 个系统音色，可搜索/分组/逐行试听），切换音色后需重新合成。
+ * 我的配音：逐句上传自己的录音文件，或直接在软件里录；音频统一转成与
+ * TTS 相同的 mp3 参数并测时长，后续混剪/字幕的时间轴逻辑完全共用。
  */
 import { ElMessage } from 'element-plus'
-import { computed, onMounted, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useAppConfig } from '@/composables/useAppConfig'
 import { useBailianTts, type TtsSentenceState } from '@/composables/bailian-tts/useBailianTts'
 import { useWorkflowState } from '@/composables/useWorkflowState'
-import { TTS_VOICE_OPTIONS } from '@/config/tts-voices'
+import {
+  TTS_VOICE_GROUPS,
+  TTS_VOICE_OPTIONS,
+  findTtsVoice,
+  ttsVoiceLabel,
+  type TtsVoiceGroup,
+  type TtsVoiceOption,
+} from '@/config/tts-voices'
 
 const {
   sentences,
   narration,
   totalDurationMs,
   isSynthesizing,
+  voiceSource,
   loadFromCopy,
   synthesizeAll,
   synthesizeSentence,
-  resetSynthesis,
+  resetAiSynthesis,
+  importUserAudioFor,
+  saveRecordingFor,
 } = useBailianTts()
 
 const appConfig = useAppConfig()
@@ -41,32 +52,65 @@ watch(createdCopyText, (next) => {
   loadFromCopy()
 })
 
-/** 音色下拉选项：预设名单 + 当前配置里的自定义音色（若不在名单内） */
-const voiceOptions = computed(() => {
-  const current = appConfig.config.value.bailianTtsVoice
-  const list = [...TTS_VOICE_OPTIONS]
-  if (current && !list.some((option) => option.id === current)) {
-    list.unshift({ id: current, label: `自定义 · ${current}` })
-  }
-  return list
+const currentVoiceId = computed(() => appConfig.config.value.bailianTtsVoice)
+const currentVoiceLabel = computed(() => {
+  const id = currentVoiceId.value
+  if (!id) return '未设置音色'
+  return findTtsVoice(id) ? ttsVoiceLabel(id) : `自定义 · ${id}`
 })
 
-const PREVIEW_TEXT = '大家好，这是一段音色试听，选我来为你的视频配音吧。'
-const isPreviewing = ref(false)
+// ===== 音色选择面板 =====
+const pickerOpen = ref(false)
+const pickerSearch = ref('')
+const pickerGroup = ref<'全部' | TtsVoiceGroup>('全部')
+
+const filteredGroups = computed(() => {
+  const query = pickerSearch.value.trim().toLowerCase()
+  const matches = (voice: TtsVoiceOption) => {
+    if (pickerGroup.value !== '全部' && voice.group !== pickerGroup.value) {
+      return false
+    }
+    if (!query) return true
+    const haystack =
+      `${voice.name} ${voice.gender} ${voice.traits} ${voice.tags} ${voice.id}`.toLowerCase()
+    return haystack.includes(query)
+  }
+  return TTS_VOICE_GROUPS.map((group) => ({
+    group,
+    voices: TTS_VOICE_OPTIONS.filter((v) => v.group === group && matches(v)),
+  })).filter((section) => section.voices.length > 0)
+})
+
+const filteredCount = computed(() =>
+  filteredGroups.value.reduce((sum, section) => sum + section.voices.length, 0),
+)
+
+/** 当前音色若不在名单内（配置中心手填的复刻音色等），在面板顶部单独成行 */
+const customVoice = computed(() => {
+  const id = currentVoiceId.value
+  return id && !findTtsVoice(id) ? id : ''
+})
+
+const PREVIEW_TEXT_ZH = '大家好，这是一段音色试听，选我来为你的视频配音吧。'
+const PREVIEW_TEXT_EN = 'Hello, this is a voice preview. Pick me to narrate your video.'
+const previewingId = ref('')
 const previewAudioUrl = ref('')
 
-/** 用当前选中的音色合成一句示例并播放（走单句合成，读配置里的音色） */
-async function previewVoice(): Promise<void> {
-  if (isPreviewing.value) return
+/** 用指定音色合成一句示例并播放（面板逐行试听与顶部试听共用） */
+async function previewVoice(voice: TtsVoiceOption | string): Promise<void> {
+  const voiceId = typeof voice === 'string' ? voice : voice.id
+  if (!voiceId || previewingId.value) return
   if (!appConfig.isLoaded.value) await appConfig.refreshConfig()
   if (!appConfig.hasBailianKey.value) {
     ElMessage.warning('请先在配置中心填写百炼 API Key')
     return
   }
-  isPreviewing.value = true
+  previewingId.value = voiceId
   try {
+    const group = typeof voice === 'string' ? undefined : voice.group
     const result = await window.desktopApi.synthesizeBailianTtsOne({
-      text: PREVIEW_TEXT,
+      text: group === '英文' ? PREVIEW_TEXT_EN : PREVIEW_TEXT_ZH,
+      voice: voiceId,
     })
     const url = (result as { audioUrl?: unknown })?.audioUrl
     if (typeof url !== 'string' || !url) {
@@ -76,25 +120,86 @@ async function previewVoice(): Promise<void> {
   } catch (error) {
     ElMessage.error(error instanceof Error ? error.message : '试听失败')
   } finally {
-    isPreviewing.value = false
+    previewingId.value = ''
   }
 }
 
-async function onVoiceChange(event: Event): Promise<void> {
-  const next = (event.target as HTMLSelectElement).value
-  const prev = appConfig.config.value.bailianTtsVoice
-  if (!next || next === prev) return
+async function selectVoice(next: string): Promise<void> {
+  const prev = currentVoiceId.value
+  if (!next || next === prev) {
+    pickerOpen.value = false
+    return
+  }
   await appConfig.saveConfig({
     ...appConfig.config.value,
     bailianTtsVoice: next,
   })
-  if (sentences.value.some((s) => s.status === 'done')) {
-    resetSynthesis()
-    ElMessage.info('音色已切换，之前的配音已清空，请重新逐句合成')
+  pickerOpen.value = false
+  if (sentences.value.some((s) => s.status === 'done' && s.source === 'ai')) {
+    resetAiSynthesis()
+    ElMessage.info('音色已切换，之前的 AI 配音已清空，请重新逐句合成（自己的录音不受影响）')
   } else {
     ElMessage.success('音色已切换')
   }
 }
+
+// ===== 我的配音：软件内录音 =====
+const recordingIndex = ref(-1)
+let mediaRecorder: MediaRecorder | null = null
+let mediaStream: MediaStream | null = null
+let recordChunks: Blob[] = []
+
+function stopMediaStream(): void {
+  mediaStream?.getTracks().forEach((track) => track.stop())
+  mediaStream = null
+  mediaRecorder = null
+}
+
+async function startRecording(index: number): Promise<void> {
+  if (recordingIndex.value !== -1) return
+  try {
+    mediaStream = await navigator.mediaDevices.getUserMedia({ audio: true })
+  } catch {
+    ElMessage.error(
+      '打不开麦克风：请在系统设置里允许本软件使用麦克风，或改用「上传」选已录好的音频',
+    )
+    return
+  }
+  recordChunks = []
+  mediaRecorder = new MediaRecorder(mediaStream)
+  mediaRecorder.ondataavailable = (event) => {
+    if (event.data.size) recordChunks.push(event.data)
+  }
+  mediaRecorder.onstop = () => {
+    const blob = new Blob(recordChunks, {
+      type: mediaRecorder?.mimeType || 'audio/webm',
+    })
+    stopMediaStream()
+    recordingIndex.value = -1
+    if (blob.size) {
+      void saveRecordingFor(index, blob)
+    }
+  }
+  recordingIndex.value = index
+  mediaRecorder.start()
+}
+
+function stopRecording(): void {
+  if (mediaRecorder && mediaRecorder.state !== 'inactive') {
+    mediaRecorder.stop()
+  } else {
+    stopMediaStream()
+    recordingIndex.value = -1
+  }
+}
+
+onBeforeUnmount(() => {
+  if (recordingIndex.value !== -1) stopRecording()
+})
+
+const doneCount = computed(
+  () => sentences.value.filter((s) => s.status === 'done').length,
+)
 
 function formatDuration(ms: number): string {
   if (!ms) return '—'
@@ -104,70 +209,99 @@ function formatDuration(ms: number): string {
 function statusLabel(status: TtsSentenceState['status']): string {
   switch (status) {
     case 'synthesizing':
-      return '合成中…'
+      return '处理中…'
     case 'error':
       return '失败'
     case 'done':
-      return '已合成'
+      return '已就位'
     default:
-      return '待合成'
+      return '待处理'
   }
 }
 </script>
 
 <template>
   <section class="bailian-tts-section">
-    <div class="tts-voice-row">
-      <label class="tts-voice-label" for="tts-voice-select">音色</label>
-      <select
-        id="tts-voice-select"
-        class="tts-voice-select"
-        :value="appConfig.config.value.bailianTtsVoice"
-        :disabled="isSynthesizing"
-        @change="onVoiceChange"
-      >
-        <option
-          v-for="option in voiceOptions"
-          :key="option.id"
-          :value="option.id"
-        >
-          {{ option.label }}
-        </option>
-      </select>
+    <div class="tts-mode-row" role="tablist" aria-label="配音来源">
       <button
-        class="ui-ai-btn"
         type="button"
-        :disabled="isPreviewing || isSynthesizing"
-        @click="previewVoice"
+        class="tts-mode-btn"
+        :class="{ 'is-active': voiceSource === 'ai' }"
+        @click="voiceSource = 'ai'"
       >
-        {{ isPreviewing ? '生成中…' : '试听' }}
+        AI 配音
+      </button>
+      <button
+        type="button"
+        class="tts-mode-btn"
+        :class="{ 'is-active': voiceSource === 'mine' }"
+        @click="voiceSource = 'mine'"
+      >
+        我的配音
       </button>
       <span class="tts-voice-model">
         模型 {{ appConfig.config.value.bailianTtsModel }}
       </span>
     </div>
 
-    <audio
-      v-if="previewAudioUrl"
-      :src="previewAudioUrl"
-      controls
-      autoplay
-      class="tts-preview-audio"
-    ></audio>
+    <template v-if="voiceSource === 'ai'">
+      <div class="tts-voice-row">
+        <label class="tts-voice-label">音色</label>
+        <button
+          type="button"
+          class="tts-voice-picker-btn"
+          :disabled="isSynthesizing"
+          @click="pickerOpen = true"
+        >
+          <span class="tts-voice-picker-label">{{ currentVoiceLabel }}</span>
+          <span class="tts-voice-picker-action">选择音色</span>
+        </button>
+        <button
+          class="ui-ai-btn"
+          type="button"
+          :disabled="!!previewingId || isSynthesizing"
+          @click="previewVoice(currentVoiceId)"
+        >
+          {{ previewingId === currentVoiceId ? '生成中…' : '试听' }}
+        </button>
+      </div>
 
-    <div class="tts-actions">
-      <button class="secondary-button" type="button" @click="loadFromCopy">
-        载入文案分句
-      </button>
-      <button
-        class="primary-button"
-        type="button"
-        :disabled="isSynthesizing"
-        @click="synthesizeAll"
-      >
-        {{ isSynthesizing ? '合成中…' : '逐句合成配音' }}
-      </button>
-    </div>
+      <audio
+        v-if="previewAudioUrl"
+        :src="previewAudioUrl"
+        controls
+        autoplay
+        class="tts-preview-audio"
+      ></audio>
+
+      <div class="tts-actions">
+        <button class="secondary-button" type="button" @click="loadFromCopy">
+          载入文案分句
+        </button>
+        <button
+          class="primary-button"
+          type="button"
+          :disabled="isSynthesizing"
+          @click="synthesizeAll"
+        >
+          {{ isSynthesizing ? '合成中…' : '逐句合成配音' }}
+        </button>
+      </div>
+    </template>
+
+    <template v-else>
+      <p class="tts-mine-hint">
+        逐句用你自己的声音：点「上传」选一段录好的音频，或点「录音」直接在软件里念这一句。时长会自动测出来，后面混剪、字幕照常走。
+      </p>
+      <div class="tts-actions">
+        <button class="secondary-button" type="button" @click="loadFromCopy">
+          载入文案分句
+        </button>
+        <span v-if="sentences.length" class="tts-mine-progress">
+          已就位 {{ doneCount }} / {{ sentences.length }} 句
+        </span>
+      </div>
+    </template>
 
     <p v-if="!sentences.length" class="tts-empty">
       先完成第二步文案，再点「载入文案分句」把文案切成一句一句。
@@ -188,15 +322,47 @@ function statusLabel(status: TtsSentenceState['status']): string {
                 : statusLabel(sentence.status)
             }}
           </span>
-          <button
-            v-if="sentence.status === 'done' || sentence.status === 'error'"
-            class="tts-retry"
-            type="button"
-            :disabled="isSynthesizing"
-            @click="synthesizeSentence(index)"
-          >
-            重合成
-          </button>
+          <span v-if="sentence.status === 'done'" class="tts-source-badge">
+            {{ sentence.source === 'user' ? '我的录音' : 'AI' }}
+          </span>
+          <template v-if="voiceSource === 'ai'">
+            <button
+              v-if="sentence.status === 'done' || sentence.status === 'error'"
+              class="tts-retry"
+              type="button"
+              :disabled="isSynthesizing"
+              @click="synthesizeSentence(index)"
+            >
+              重合成
+            </button>
+          </template>
+          <template v-else>
+            <button
+              class="tts-retry"
+              type="button"
+              :disabled="sentence.status === 'synthesizing' || recordingIndex !== -1"
+              @click="importUserAudioFor(index)"
+            >
+              {{ sentence.status === 'done' ? '换录音' : '上传' }}
+            </button>
+            <button
+              v-if="recordingIndex !== index"
+              class="tts-retry"
+              type="button"
+              :disabled="sentence.status === 'synthesizing' || recordingIndex !== -1"
+              @click="startRecording(index)"
+            >
+              录音
+            </button>
+            <button
+              v-else
+              class="tts-retry is-recording"
+              type="button"
+              @click="stopRecording"
+            >
+              ● 停止录音
+            </button>
+          </template>
         </div>
         <audio
           v-if="sentence.audioUrl"
@@ -220,6 +386,106 @@ function statusLabel(status: TtsSentenceState['status']): string {
         class="tts-narration-audio"
       ></audio>
     </div>
+
+    <teleport to="body">
+      <div v-if="pickerOpen" class="voice-picker-backdrop" @click.self="pickerOpen = false">
+        <section class="voice-picker" role="dialog" aria-modal="true" aria-label="选择音色">
+          <header class="voice-picker-header">
+            <h3>选择音色</h3>
+            <span class="voice-picker-count">共 {{ TTS_VOICE_OPTIONS.length }} 个</span>
+            <button type="button" class="voice-picker-close" aria-label="关闭" @click="pickerOpen = false">
+              ×
+            </button>
+          </header>
+          <div class="voice-picker-tools">
+            <input
+              v-model="pickerSearch"
+              class="ui-input voice-picker-search"
+              type="text"
+              placeholder="搜索：温柔 / 大叔 / 东北话 / 新闻播报…"
+            />
+            <div class="voice-picker-groups">
+              <button
+                type="button"
+                class="voice-group-chip"
+                :class="{ 'is-active': pickerGroup === '全部' }"
+                @click="pickerGroup = '全部'"
+              >
+                全部
+              </button>
+              <button
+                v-for="group in TTS_VOICE_GROUPS"
+                :key="group"
+                type="button"
+                class="voice-group-chip"
+                :class="{ 'is-active': pickerGroup === group }"
+                @click="pickerGroup = group"
+              >
+                {{ group }}
+              </button>
+            </div>
+          </div>
+
+          <audio
+            v-if="previewAudioUrl"
+            :src="previewAudioUrl"
+            controls
+            autoplay
+            class="tts-preview-audio"
+          ></audio>
+
+          <div class="voice-picker-list">
+            <div v-if="customVoice" class="voice-picker-section">
+              <p class="voice-picker-section-title">当前自定义音色</p>
+              <div class="voice-row is-current">
+                <span class="voice-row-main">
+                  <span class="voice-row-name">自定义 · {{ customVoice }}</span>
+                  <span class="voice-row-tags">配置中心手填的音色 ID</span>
+                </span>
+                <span class="voice-row-current">当前</span>
+              </div>
+            </div>
+            <p v-if="!filteredCount && !customVoice" class="tts-empty">
+              没有匹配的音色，换个关键词试试。
+            </p>
+            <div
+              v-for="section in filteredGroups"
+              :key="section.group"
+              class="voice-picker-section"
+            >
+              <p class="voice-picker-section-title">
+                {{ section.group }} · {{ section.voices.length }}
+              </p>
+              <div
+                v-for="voice in section.voices"
+                :key="voice.id"
+                class="voice-row"
+                :class="{ 'is-current': voice.id === currentVoiceId }"
+                @click="selectVoice(voice.id)"
+              >
+                <span class="voice-row-main">
+                  <span class="voice-row-name">
+                    {{ voice.name }} · {{ voice.gender }} · {{ voice.traits }}
+                  </span>
+                  <span class="voice-row-tags">{{ voice.tags }}</span>
+                </span>
+                <span v-if="voice.id === currentVoiceId" class="voice-row-current">
+                  当前
+                </span>
+                <button
+                  type="button"
+                  class="ui-ai-btn voice-row-preview"
+                  :disabled="!!previewingId"
+                  @click.stop="previewVoice(voice)"
+                >
+                  {{ previewingId === voice.id ? '生成中…' : '试听' }}
+                </button>
+              </div>
+            </div>
+          </div>
+        </section>
+      </div>
+    </teleport>
   </section>
 </template>
 
@@ -227,6 +493,31 @@ function statusLabel(status: TtsSentenceState['status']): string {
 .bailian-tts-section {
   display: grid;
   gap: 10px;
+}
+
+.tts-mode-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.tts-mode-btn {
+  height: 30px;
+  padding: 0 16px;
+  border: 1px solid #cbd5e1;
+  border-radius: 999px;
+  background: #ffffff;
+  color: #41546b;
+  font-size: 13px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.tts-mode-btn.is-active {
+  border-color: #2a6f97;
+  background: #2a6f97;
+  color: #ffffff;
 }
 
 .tts-voice-row {
@@ -242,27 +533,42 @@ function statusLabel(status: TtsSentenceState['status']): string {
   font-weight: 700;
 }
 
-.tts-voice-select {
+.tts-voice-picker-btn {
   flex: 1;
   min-width: 180px;
   height: 30px;
-  padding: 0 8px;
+  padding: 0 10px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
   border: 1px solid #d5e1ec;
   border-radius: 7px;
   background: #ffffff;
   color: #18212f;
   font-size: 12px;
-  outline: none;
   cursor: pointer;
 }
 
-.tts-voice-select:focus {
+.tts-voice-picker-btn:hover:not(:disabled) {
   border-color: #2a6f97;
 }
 
-.tts-voice-select:disabled {
+.tts-voice-picker-btn:disabled {
   opacity: 0.6;
   cursor: not-allowed;
+}
+
+.tts-voice-picker-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tts-voice-picker-action {
+  flex: none;
+  color: #2a6f97;
+  font-weight: 700;
 }
 
 .tts-voice-model {
@@ -270,14 +576,8 @@ function statusLabel(status: TtsSentenceState['status']): string {
   font-size: 12px;
 }
 
-/* 试听按钮已改用全局 .ui-ai-btn（见 style.css 统一按钮方案） */
 .tts-voice-row .ui-ai-btn {
   flex: none;
-}
-
-.tts-preview-btn:disabled {
-  opacity: 0.6;
-  cursor: not-allowed;
 }
 
 .tts-preview-audio {
@@ -287,8 +587,22 @@ function statusLabel(status: TtsSentenceState['status']): string {
 
 .tts-actions {
   display: flex;
+  align-items: center;
   gap: 10px;
   flex-wrap: wrap;
+}
+
+.tts-mine-hint {
+  margin: 0;
+  color: #64748b;
+  font-size: 12px;
+  line-height: 1.7;
+}
+
+.tts-mine-progress {
+  color: #2a7d4f;
+  font-size: 12px;
+  font-weight: 700;
 }
 
 .tts-empty {
@@ -304,6 +618,9 @@ function statusLabel(status: TtsSentenceState['status']): string {
   margin: 0;
   padding: 0;
   list-style: none;
+  max-height: 400px;
+  overflow-y: auto;
+  padding-right: 2px;
 }
 
 .tts-row {
@@ -317,6 +634,7 @@ function statusLabel(status: TtsSentenceState['status']): string {
   display: flex;
   align-items: flex-start;
   gap: 8px;
+  flex-wrap: wrap;
 }
 
 .tts-idx {
@@ -336,7 +654,7 @@ function statusLabel(status: TtsSentenceState['status']): string {
 
 .tts-text {
   flex: 1;
-  min-width: 0;
+  min-width: 120px;
   color: #29435f;
   font-size: 13px;
   line-height: 1.6;
@@ -352,6 +670,19 @@ function statusLabel(status: TtsSentenceState['status']): string {
 
 .tts-meta.error {
   color: #d9694f;
+}
+
+.tts-source-badge {
+  flex: none;
+  height: 22px;
+  padding: 0 8px;
+  display: inline-flex;
+  align-items: center;
+  border-radius: 999px;
+  background: #eef5fb;
+  color: #2a6f97;
+  font-size: 11px;
+  font-weight: 700;
 }
 
 .tts-retry {
@@ -374,6 +705,12 @@ function statusLabel(status: TtsSentenceState['status']): string {
 .tts-retry:disabled {
   opacity: 0.6;
   cursor: not-allowed;
+}
+
+.tts-retry.is-recording {
+  border-color: #f0c6bd;
+  background: #fdf0ec;
+  color: #d9694f;
 }
 
 .tts-audio {
@@ -399,5 +736,162 @@ function statusLabel(status: TtsSentenceState['status']): string {
 .tts-narration-audio {
   width: 100%;
   height: 32px;
+}
+
+/* ===== 音色选择面板 ===== */
+.voice-picker-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 1200;
+  display: grid;
+  place-items: center;
+  background: rgba(24, 33, 47, 0.45);
+}
+
+.voice-picker {
+  width: min(560px, calc(100vw - 48px));
+  max-height: calc(100vh - 80px);
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 16px;
+  border-radius: 14px;
+  background: #ffffff;
+  box-shadow: 0 18px 50px rgba(24, 33, 47, 0.25);
+}
+
+.voice-picker-header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.voice-picker-header h3 {
+  margin: 0;
+  color: #18212f;
+  font-size: 16px;
+}
+
+.voice-picker-count {
+  color: #8296a8;
+  font-size: 12px;
+}
+
+.voice-picker-close {
+  margin-left: auto;
+  width: 28px;
+  height: 28px;
+  border: 1px solid #d5e1ec;
+  border-radius: 50%;
+  background: #ffffff;
+  color: #41546b;
+  font-size: 16px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.voice-picker-tools {
+  display: grid;
+  gap: 8px;
+}
+
+.voice-picker-search {
+  width: 100%;
+  height: 34px;
+}
+
+.voice-picker-groups {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.voice-group-chip {
+  height: 26px;
+  padding: 0 12px;
+  border: 1px solid #dcdfe6;
+  border-radius: 999px;
+  background: #ffffff;
+  color: #41546b;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.voice-group-chip.is-active {
+  border-color: #2a6f97;
+  background: #2a6f97;
+  color: #ffffff;
+}
+
+.voice-picker-list {
+  overflow-y: auto;
+  display: grid;
+  gap: 12px;
+  padding-right: 2px;
+}
+
+.voice-picker-section {
+  display: grid;
+  gap: 6px;
+}
+
+.voice-picker-section-title {
+  margin: 0;
+  color: #64748b;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.voice-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 10px;
+  border: 1px solid #e2eaf1;
+  border-radius: 10px;
+  background: #f8fbfd;
+  cursor: pointer;
+}
+
+.voice-row:hover {
+  border-color: #2a6f97;
+}
+
+.voice-row.is-current {
+  border-color: #2a6f97;
+  background: #eef5fb;
+}
+
+.voice-row-main {
+  flex: 1;
+  min-width: 0;
+  display: grid;
+  gap: 2px;
+}
+
+.voice-row-name {
+  color: #29435f;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.voice-row-tags {
+  color: #8296a8;
+  font-size: 11px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.voice-row-current {
+  flex: none;
+  color: #2a6f97;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.voice-row-preview {
+  flex: none;
 }
 </style>

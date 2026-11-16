@@ -87,11 +87,12 @@ function runFfmpeg(args: string[]): Promise<void> {
   });
 }
 
-/** 合成一句并落盘，返回文件信息与时长 */
+/** 合成一句并落盘，返回文件信息与时长（voiceOverride 供音色面板逐行试听） */
 async function synthesizeSentenceAudio(
   config: AppConfig,
   text: string,
   outDir: string,
+  voiceOverride?: string,
 ): Promise<{ fileName: string; audioUrl: string; durationMs: number }> {
   const apiKey = config.bailianApiKey.trim();
   if (!apiKey) {
@@ -110,7 +111,7 @@ async function synthesizeSentenceAudio(
         model: config.bailianTtsModel,
         input: {
           text,
-          voice: config.bailianTtsVoice,
+          voice: voiceOverride?.trim() || config.bailianTtsVoice,
           format: "mp3",
           sample_rate: 24000,
         },
@@ -182,13 +183,75 @@ export async function synthesizeAllSentences(
   return results;
 }
 
-/** 合成单句（单句重试用） */
+/** 合成单句（单句重试用；voiceOverride 供音色面板逐行试听） */
 export async function synthesizeOneSentence(
   config: AppConfig,
   text: string,
   outDir: string,
+  voiceOverride?: string,
 ): Promise<{ fileName: string; audioUrl: string; durationMs: number }> {
-  return synthesizeSentenceAudio(config, text.trim(), outDir);
+  return synthesizeSentenceAudio(config, text.trim(), outDir, voiceOverride);
+}
+
+/**
+ * 把用户自己的录音转成与 TTS 一致的 mp3（24kHz 单声道），落盘并测时长。
+ * 参数对齐后，逐句旁白仍可走 concatNarrationAudio 的流拷贝拼接，
+ * 混剪/字幕的时间轴逻辑完全不用改。
+ */
+async function normalizeUserAudio(
+  sourcePath: string,
+  outDir: string,
+): Promise<{ fileName: string; audioUrl: string; durationMs: number }> {
+  await mkdir(outDir, { recursive: true });
+  const fileName = `${randomUUID()}.mp3`;
+  const outputPath = join(outDir, fileName);
+  await runFfmpeg([
+    "-y",
+    "-i",
+    sourcePath,
+    "-vn",
+    "-ar",
+    "24000",
+    "-ac",
+    "1",
+    "-codec:a",
+    "libmp3lame",
+    "-b:a",
+    "64k",
+    outputPath,
+  ]);
+  const durationMs = await probeDurationMs(outputPath);
+  if (!durationMs) {
+    throw new Error("没能读出这段音频的时长，请换一个音频文件再试");
+  }
+  return {
+    fileName,
+    audioUrl: `local-audio://synthesized/${fileName}`,
+    durationMs,
+  };
+}
+
+/** 导入用户选好的录音文件（第三步「我的配音」逐句上传） */
+export async function importUserAudioFile(
+  sourcePath: string,
+  outDir: string,
+): Promise<{ fileName: string; audioUrl: string; durationMs: number }> {
+  return normalizeUserAudio(sourcePath, outDir);
+}
+
+/** 保存软件内录音（渲染层 MediaRecorder 的 webm 数据）并转成统一 mp3 */
+export async function saveRecordedAudio(
+  dataBase64: string,
+  outDir: string,
+): Promise<{ fileName: string; audioUrl: string; durationMs: number }> {
+  const bytes = Buffer.from(dataBase64, "base64");
+  if (!bytes.length) {
+    throw new Error("录音数据为空，请重新录制");
+  }
+  await mkdir(outDir, { recursive: true });
+  const rawPath = join(outDir, `recording-${randomUUID()}.webm`);
+  await writeFile(rawPath, bytes);
+  return normalizeUserAudio(rawPath, outDir);
 }
 
 /** 把逐句音频按顺序拼成完整旁白（同参数 mp3 直接流拷贝拼接） */

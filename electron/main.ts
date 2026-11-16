@@ -6,6 +6,7 @@ import {
   Menu,
   net,
   protocol,
+  session,
   shell,
   systemPreferences,
 } from "electron";
@@ -105,6 +106,8 @@ import {
 } from "./services/copy-creation-bailian";
 import {
   concatNarrationAudio,
+  importUserAudioFile,
+  saveRecordedAudio,
   synthesizeAllSentences,
   synthesizeOneSentence,
 } from "./services/bailian-tts";
@@ -454,6 +457,14 @@ function createMainWindow(): void {
 
 app.whenReady().then(() => {
   app.setAppUserModelId("com.free-super-agent.desktop");
+  // 第三步「我的配音」软件内录音要走 getUserMedia：放行本应用页面的 media
+  // 权限请求（其余权限一律拒绝）。macOS 还需要在 Info.plist 里有麦克风
+  // 用途说明（package.json 的 mac.extendInfo 已配），系统才会弹授权框。
+  session.defaultSession.setPermissionRequestHandler(
+    (_webContents, permission, callback) => {
+      callback(permission === "media");
+    },
+  );
   registerLocalVideoProtocol();
   registerLocalAudioProtocol();
   registerLocalPipProtocol();
@@ -606,14 +617,26 @@ app.whenReady().then(() => {
   );
   ipcMain.handle(
     "bailian-tts:synthesize-one",
-    async (_event, payload: { text: string }) => {
+    async (_event, payload: { text: string; voice?: string }) => {
       const config = await loadAppConfig();
       return synthesizeOneSentence(
         config,
         payload.text,
         getSynthesizedAudioDir(),
+        payload.voice,
       );
     },
+  );
+  // ===== 我的配音：导入录音文件 / 保存软件内录音 =====
+  ipcMain.handle(
+    "bailian-tts:import-file",
+    async (_event, payload: { sourcePath: string }) =>
+      importUserAudioFile(payload.sourcePath, getSynthesizedAudioDir()),
+  );
+  ipcMain.handle(
+    "bailian-tts:save-recording",
+    async (_event, payload: { dataBase64: string }) =>
+      saveRecordedAudio(payload.dataBase64, getSynthesizedAudioDir()),
   );
   ipcMain.handle(
     "bailian-tts:concat",
