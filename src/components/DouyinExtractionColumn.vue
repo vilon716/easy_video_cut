@@ -4,6 +4,7 @@ import { ElDivider } from 'element-plus'
 import { ref } from 'vue'
 import { useCopyCreation } from '@/composables/useCopyCreation'
 import { useDouyinExtraction } from '@/composables/useDouyinExtraction'
+import { COPY_STYLES, findCopyStyle } from '@/config/copy-styles'
 
 const {
   douyinUrl,
@@ -16,13 +17,22 @@ const {
 } = useDouyinExtraction()
 
 const {
+  copyStyleId,
   createdCopy,
   creationElapsedText,
+  createFromTopic,
   createRewriteCopy,
   isCreatingCopy,
   rewriteRequirements,
+  setCopyStyleId,
   stopCopyCreation
 } = useCopyCreation()
+
+const topicText = ref('')
+
+function handleTopicCreate(): void {
+  void createFromTopic(topicText.value)
+}
 
 const isVideoPreviewOpen = ref(false)
 
@@ -74,9 +84,48 @@ function closeVideoPreview(): void {
         <textarea v-model="extractedCopy" rows="8" placeholder="提取完成后显示文案，可在这里修改"></textarea>
       </section>
 
+      <el-divider class="step-divider">AI 选题</el-divider>
+
+      <section class="topic-creation-tool">
+        <label class="tool-field">
+          <span>选题（不用链接，写一句话就行）</span>
+          <input
+            v-model="topicText"
+            type="text"
+            placeholder="如：新手做自媒体最容易踩的三个坑"
+            :disabled="isCreatingCopy"
+            @keyup.enter="handleTopicCreate"
+          />
+        </label>
+        <div class="tool-actions">
+          <button class="primary-button" type="button" :disabled="isCreatingCopy" @click="handleTopicCreate">
+            {{ isCreatingCopy ? '创作中...' : '生成文案' }}
+          </button>
+        </div>
+        <p class="topic-hint">按第二步选中的文案风格生成，结果出现在第二步「文案创作」里，可继续改写或直接去配音。</p>
+      </section>
+
       <el-divider class="step-divider">第二步：文案创作改写</el-divider>
 
       <section class="copy-creation-tool">
+        <div class="tool-field copy-style-field">
+          <span>文案风格</span>
+          <div class="copy-style-chips">
+            <button
+              v-for="style in COPY_STYLES"
+              :key="style.id"
+              type="button"
+              class="copy-style-chip"
+              :class="{ 'is-active': copyStyleId === style.id }"
+              :disabled="isCreatingCopy"
+              @click="setCopyStyleId(style.id)"
+            >
+              {{ style.label }}
+            </button>
+          </div>
+          <p class="copy-style-hint">{{ findCopyStyle(copyStyleId).hint }}</p>
+        </div>
+
         <label class="tool-field other-requirements-field">
           <span>改写要求</span>
           <textarea v-model="rewriteRequirements" rows="3" placeholder="例如：更适合女性用户，开头三秒更强的钩子。"
@@ -165,12 +214,66 @@ function closeVideoPreview(): void {
   background: linear-gradient(180deg, #ffffff 0%, #eef5fb 100%);
   font-size: 13px;
   font-weight: 700;
+  white-space: nowrap;
   box-shadow: 0 4px 12px rgba(42, 74, 108, 0.08);
 }
 
 .tool-field {
   display: grid;
   gap: 6px;
+}
+
+.copy-style-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.copy-style-chip {
+  height: 28px;
+  padding: 0 12px;
+  border: 1px solid #dcdfe6;
+  border-radius: 999px;
+  background: #ffffff;
+  color: #41546b;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.copy-style-chip:hover {
+  border-color: #2a6f97;
+  color: #2a6f97;
+}
+
+.copy-style-chip.is-active {
+  border-color: #2a6f97;
+  background: #2a6f97;
+  color: #ffffff;
+}
+
+.copy-style-chip:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.copy-style-hint {
+  margin: 0;
+  color: #c77414;
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.topic-creation-tool {
+  display: grid;
+  gap: 10px;
+}
+
+.topic-hint {
+  margin: 0;
+  color: #64748b;
+  font-size: 12px;
+  line-height: 1.6;
 }
 
 .tool-field>span {

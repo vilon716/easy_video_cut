@@ -10,6 +10,13 @@
  */
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
+import { BUNDLED_DEFAULTS } from "./bundled-defaults";
+
+/** 用户复刻的专属音色（存在百炼账号下，本地只记 ID 与显示名） */
+export interface ClonedVoice {
+  id: string;
+  name: string;
+}
 
 export interface AppConfig {
   /** 百炼 API Key（Leo 工作空间的密钥；以后换自己的账号只改这一项） */
@@ -32,6 +39,8 @@ export interface AppConfig {
   bgmDir: string;
   /** 本地素材库文件夹绝对路径（混剪本地素材来源） */
   materialsDir: string;
+  /** 复刻音色列表（音色选择面板的「我的音色」分组） */
+  clonedVoices: ClonedVoice[];
 }
 
 /** Leo 的百炼 MaaS 工作空间域名（默认值，用户可在配置中心改） */
@@ -39,7 +48,7 @@ export const DEFAULT_BAILIAN_BASE_URL =
   "https://llm-ccyjbn76ya4x8n6g.cn-beijing.maas.aliyuncs.com";
 
 export function getDefaultConfig(): AppConfig {
-  return {
+  const base: AppConfig = {
     bailianApiKey: "",
     bailianBaseUrl: DEFAULT_BAILIAN_BASE_URL,
     bailianTextModel: "kimi-k3.1-pro",
@@ -50,7 +59,19 @@ export function getDefaultConfig(): AppConfig {
     coverrApiKey: "",
     bgmDir: "",
     materialsDir: "",
+    clonedVoices: [],
   };
+  // 出厂预置（自己人体验版）：只覆盖非空字段，仓库空模板时不产生任何影响。
+  // materialsDir / bgmDir 是本机路径，禁止预置（在 bundled 里写了也会被忽略）。
+  for (const [key, value] of Object.entries(BUNDLED_DEFAULTS)) {
+    if (key === "materialsDir" || key === "bgmDir") continue;
+    if (typeof value === "string" && value.trim()) {
+      (base as unknown as Record<string, unknown>)[key] = value;
+    } else if (Array.isArray(value) && value.length) {
+      (base as unknown as Record<string, unknown>)[key] = value;
+    }
+  }
+  return base;
 }
 
 function trimString(value: unknown): string {
@@ -75,6 +96,18 @@ function normalize(config: Partial<AppConfig>): AppConfig {
     coverrApiKey: trimString(config.coverrApiKey),
     bgmDir: trimString(config.bgmDir),
     materialsDir: trimString(config.materialsDir),
+    clonedVoices: Array.isArray(config.clonedVoices)
+      ? config.clonedVoices
+          .filter(
+            (voice): voice is ClonedVoice =>
+              typeof voice === "object" &&
+              voice !== null &&
+              typeof (voice as ClonedVoice).id === "string" &&
+              typeof (voice as ClonedVoice).name === "string",
+          )
+          .map((voice) => ({ id: voice.id.trim(), name: voice.name.trim() }))
+          .filter((voice) => voice.id && voice.name)
+      : [],
   };
 }
 

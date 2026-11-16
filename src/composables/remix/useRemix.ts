@@ -140,6 +140,8 @@ function useImpl() {
       materialsScanned.value = true;
       if (!materials.value.length) {
         ElMessage.warning("素材库里没有找到视频片段");
+      } else {
+        ElMessage.success(`素材库扫描完成：${materials.value.length} 个片段`);
       }
       return true;
     } catch (error) {
@@ -149,6 +151,22 @@ function useImpl() {
       return false;
     } finally {
       isScanning.value = false;
+    }
+  }
+
+  /**
+   * 「扫描素材库」按钮：扫完之后如果句子都还没配素材，顺手把本地素材
+   * 配上（用户说的"自动导入"指的是导入自己的素材）。只配本地、不生成
+   * 关键词、不走在线——在线匹配是「自动配素材」按钮的事，别串错。
+   */
+  async function scanAndAssign(): Promise<void> {
+    const ok = await scanMaterials();
+    if (!ok) return;
+    if (
+      rows.value.length &&
+      rows.value.every((row) => row.status !== "assigned")
+    ) {
+      await assignAllLocal();
     }
   }
 
@@ -263,6 +281,52 @@ function useImpl() {
       return;
     }
     row.status = "error";
+  }
+
+  /** 只用本地素材配一句：文件名命中中文关键词优先，没命中按顺序轮换 */
+  function assignRowLocal(row: RemixRow): void {
+    row.pexelsError = "";
+    const clip = pickLocalClip(row, true) ?? pickLocalClip(row);
+    if (clip) {
+      assignLocal(row, clip);
+    } else {
+      row.status = "error";
+    }
+  }
+
+  /** 「只用本地素材」：全部句子只配本地素材库的片段，完全不走在线 */
+  async function assignAllLocal(): Promise<void> {
+    if (!ensureRows()) {
+      ElMessage.warning("请先完成第三步配音");
+      return;
+    }
+    if (isAssigning.value) return;
+    if (!materialsScanned.value) {
+      const ok = await scanMaterials();
+      if (!ok) return;
+    }
+    if (!materials.value.length) {
+      ElMessage.warning("素材库里没有片段，先往素材库文件夹里放视频");
+      return;
+    }
+    isAssigning.value = true;
+    try {
+      for (const row of rows.value) {
+        assignRowLocal(row);
+      }
+      const failed = rows.value.filter((row) => row.status !== "assigned");
+      if (failed.length) {
+        ElMessage.warning(
+          `${failed.length} 句没配上：素材库片段不够用（共 ${materials.value.length} 个）`,
+        );
+      } else {
+        ElMessage.success(
+          `全部句子已配好本地素材（素材库 ${materials.value.length} 个片段轮换）`,
+        );
+      }
+    } finally {
+      isAssigning.value = false;
+    }
   }
 
   async function assignAll(): Promise<void> {
@@ -406,9 +470,11 @@ function useImpl() {
     outroText,
     allAssigned,
     ensureRows,
+    scanAndAssign,
     scanMaterials,
     generateKeywords,
     assignAll,
+    assignAllLocal,
     nextClip,
     compose,
   };

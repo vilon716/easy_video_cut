@@ -27,7 +27,7 @@ function useDouyinExtractionImpl() {
   const { ensureReady, handleAuthExpired } = useMoarkAccount();
   // 默认填一条抖音分享原文，主进程会从里面解析出短链，用户也可直接粘贴自己的分享文本
   const douyinUrl = ref(
-    "9.99 dAg:/ 01/20 :5pm h@o.da 免费，开源，超级IP智能体 超级IP智能体，不用花钱，直接用 # 自媒体创业 # 超级ip # ai编程 # 运营 # vibecoding大赏  https://v.douyin.com/_bqmQg2aY94/ 复制此链接，打开Dou音搜索，直接观看视频！",
+    "2.87 复制打开抖音，看看【在大马庄园的牛马日记的作品】到底是黑刺好吃还是猫山王好吃# 榴莲自由 # 马来... https://v.douyin.com/Q9BjM-OjanA/ eOX:/ :6pm 12/26 i@C.HI",
   );
   const isExtractingDouyin = ref(false);
   const isDouyinCancelled = ref(false);

@@ -67,7 +67,7 @@ function statusLabel(status: string): string {
         class="secondary-button"
         type="button"
         :disabled="remix.isScanning.value"
-        @click="remix.scanMaterials"
+        @click="remix.scanAndAssign"
       >
         {{ remix.isScanning.value ? '扫描中…' : '扫描素材库' }}
       </button>
@@ -86,6 +86,14 @@ function statusLabel(status: string): string {
         @click="remix.assignAll"
       >
         {{ remix.isAssigning.value ? '配素材中…' : '自动配素材' }}
+      </button>
+      <button
+        class="secondary-button"
+        type="button"
+        :disabled="remix.isAssigning.value"
+        @click="remix.assignAllLocal"
+      >
+        只用本地素材
       </button>
       <button
         class="primary-button"
@@ -120,7 +128,7 @@ function statusLabel(status: string): string {
           class="ui-input"
           type="text"
           maxlength="20"
-          placeholder="留空无片头，如：显卡怎么选"
+          placeholder="留空无片头，如：大家好，我是xxx"
         />
       </label>
       <label class="compose-option compose-option-wide">
@@ -130,7 +138,7 @@ function statusLabel(status: string): string {
           class="ui-input"
           type="text"
           maxlength="20"
-          placeholder="留空无片尾，如：关注我，看更多干货"
+          placeholder="留空无片尾，如：记得点赞关注！"
         />
       </label>
     </div>
@@ -208,6 +216,10 @@ function statusLabel(status: string): string {
 <style scoped>
 .remix-section {
   display: grid;
+  /* 列宽写死为本区宽度：不加 minmax(0,1fr) 时网格列会被内容最小宽度
+     撑出列外，右侧按钮/时长被列边裁掉（实测裁约 15px） */
+  grid-template-columns: minmax(0, 1fr);
+  min-width: 0;
   gap: 10px;
 }
 
@@ -256,8 +268,19 @@ function statusLabel(status: string): string {
   color: #64748b;
 }
 
+.compose-option > span {
+  flex: none;
+  white-space: nowrap;
+}
+
+.compose-option-wide {
+  flex: 1 1 150px;
+  min-width: 0;
+}
+
 .compose-option-wide .ui-input {
-  width: 190px;
+  width: 100%;
+  min-width: 0;
 }
 
 .remix-empty {
@@ -269,6 +292,8 @@ function statusLabel(status: string): string {
 
 .remix-list {
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  min-width: 0;
   gap: 8px;
   margin: 0;
   padding: 0;
@@ -276,11 +301,13 @@ function statusLabel(status: string): string {
   /* 句子多时列表自己滚动，别把下面的按钮推到很远 */
   max-height: 460px;
   overflow-y: auto;
+  overflow-x: hidden;
   padding-right: 2px;
 }
 
 .remix-row {
-  padding: 8px 10px;
+  min-width: 0;
+  padding: 8px;
   border: 1px solid #e2eaf1;
   border-radius: 10px;
   background: #f8fbfd;
@@ -372,6 +399,7 @@ function statusLabel(status: string): string {
   display: flex;
   align-items: center;
   gap: 8px;
+  min-width: 0;
 }
 
 .remix-row-error {
@@ -382,8 +410,8 @@ function statusLabel(status: string): string {
 }
 
 .remix-thumb {
-  width: 40px;
-  height: 60px;
+  width: 36px;
+  height: 54px;
   object-fit: cover;
   border-radius: 6px;
   background: #0f172a;

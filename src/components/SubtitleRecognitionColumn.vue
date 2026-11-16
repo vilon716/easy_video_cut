@@ -1144,8 +1144,6 @@ watch(
   flex: 1 1 auto;
   height: auto;
   min-height: 360px;
-  /* 别再被整列高度撑出大片空白：列表封顶，内部自己滚动，下面的按钮不用拉很久 */
-  max-height: 560px;
 }
 
 .subtitle-list-frame {

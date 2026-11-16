@@ -109,18 +109,29 @@ export function toLocalFileUrl(filePath: string): string {
   return `local-video://local-file/${encodeURIComponent(filePath)}`;
 }
 
-/** 用 ffmpeg -i 解析媒体时长（项目未打包 ffprobe） */
+/** 用 ffmpeg -i 解析媒体时长（项目未打包 ffprobe）；10 秒超时防个别坏文件卡死 */
 function probeDurationMs(filePath: string): Promise<number> {
   return new Promise((resolve) => {
     const proc = spawn(resolveFfmpegPath(), ["-i", filePath], {
       stdio: ["ignore", "ignore", "pipe"],
     });
     let stderr = "";
+    const timer = setTimeout(() => {
+      try {
+        proc.kill();
+      } catch {
+        /* 进程可能已退出 */
+      }
+    }, 10_000);
     proc.stderr.on("data", (chunk: Buffer) => {
       stderr += chunk.toString();
     });
-    proc.on("error", () => resolve(0));
+    proc.on("error", () => {
+      clearTimeout(timer);
+      resolve(0);
+    });
     proc.on("close", () => {
+      clearTimeout(timer);
       const match = stderr.match(/Duration:\s*(\d+):(\d+):(\d+(?:\.\d+)?)/);
       if (!match) {
         resolve(0);

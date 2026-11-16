@@ -198,14 +198,13 @@ watch(
 }
 
 .subtitle-list-panel {
-  /* flex-basis 用 0 + min-height 0：把列表高度约束在剩余空间内，
-   * 内部 .subtitle-list 才会出现滚动条，而不是把整列撑高。 */
-  flex: 1 1 0;
+  /* 不再 flex 撑满整列（隔壁列高时这里会被拉出大片空白）：
+   * 高度由内容决定，列表封顶后内部滚动。 */
+  flex: 0 0 auto;
   min-height: 0;
 }
 
 .subtitle-list-frame {
-  height: 100%;
   padding: 6px;
   border: 1px solid #d8e0ea;
   border-radius: 6px;
@@ -213,11 +212,11 @@ watch(
 }
 
 .subtitle-list {
-  height: 100%;
+  max-height: 440px;
   display: flex;
   flex-direction: column;
   gap: 6px;
-  overflow: auto;
+  overflow-y: auto;
 }
 
 .subtitle-row {
@@ -270,7 +269,8 @@ watch(
 }
 
 .empty-subtitle-list {
-  height: 100%;
+  /* 空状态用紧凑高度，别再撑出一大片空白框 */
+  height: 132px;
   display: grid;
   place-items: center;
   align-content: center;

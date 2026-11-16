@@ -14,7 +14,7 @@
  */
 import { randomUUID } from "node:crypto";
 import { spawn } from "node:child_process";
-import { mkdir, writeFile } from "node:fs/promises";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { basename, join } from "node:path";
 import { resolveFfmpegPath } from "../_shared/ffmpeg-path";
 import { logInfo } from "../_shared/logger";
@@ -252,6 +252,239 @@ export async function saveRecordedAudio(
   const rawPath = join(outDir, `recording-${randomUUID()}.webm`);
   await writeFile(rawPath, bytes);
   return normalizeUserAudio(rawPath, outDir);
+}
+
+/**
+ * 整段配音导入：用户在外面录好一整段旁白，这里按各句字数比例把整段
+ * 切成逐句 mp3（切分点是估算，逐句拼回去即完整旁白，时间轴逻辑不变）。
+ */
+export async function importFullNarration(
+  sourcePath: string,
+  sentenceTexts: string[],
+  outDir: string,
+): Promise<{ fileName: string; audioUrl: string; durationMs: number }[]> {
+  if (!sentenceTexts.length) {
+    throw new Error("先载入文案分句，再导入整段录音");
+  }
+  await mkdir(outDir, { recursive: true });
+  const totalMs = await probeDurationMs(sourcePath);
+  if (!totalMs) {
+    throw new Error("没能读出这段音频的时长，请换一个音频文件再试");
+  }
+  const weights = sentenceTexts.map((text) =>
+    Math.max(1, text.replace(/\s+/g, "").length),
+  );
+  const totalWeight = weights.reduce((sum, w) => sum + w, 0);
+  const results: { fileName: string; audioUrl: string; durationMs: number }[] =
+    [];
+  let cursorMs = 0;
+  let accumulated = 0;
+  for (let i = 0; i < sentenceTexts.length; i++) {
+    accumulated += weights[i];
+    const isLast = i === sentenceTexts.length - 1;
+    const endMs = isLast
+      ? totalMs
+      : Math.round((accumulated / totalWeight) * totalMs);
+    const sliceMs = Math.max(300, endMs - cursorMs);
+    const fileName = `${randomUUID()}.mp3`;
+    const outputPath = join(outDir, fileName);
+    await runFfmpeg([
+      "-y",
+      "-ss",
+      (cursorMs / 1000).toFixed(3),
+      "-i",
+      sourcePath,
+      "-t",
+      (sliceMs / 1000).toFixed(3),
+      "-vn",
+      "-ar",
+      "24000",
+      "-ac",
+      "1",
+      "-codec:a",
+      "libmp3lame",
+      "-b:a",
+      "64k",
+      outputPath,
+    ]);
+    const durationMs = await probeDurationMs(outputPath);
+    if (!durationMs) {
+      throw new Error("整段录音切分失败，请换一个音频文件再试");
+    }
+    results.push({
+      fileName,
+      audioUrl: `local-audio://synthesized/${fileName}`,
+      durationMs,
+    });
+    cursorMs = endMs;
+  }
+  return results;
+}
+
+// ===== 声音复刻（百炼 voice-enrollment） =====
+
+interface CustomizationResponse {
+  output?: { voice_id?: string; status?: string; message?: string };
+  code?: string;
+  message?: string;
+}
+
+async function postCustomization(
+  config: AppConfig,
+  input: Record<string, unknown>,
+): Promise<CustomizationResponse> {
+  const baseUrl = config.bailianBaseUrl.replace(/\/+$/, "");
+  const response = await fetch(
+    `${baseUrl}/api/v1/services/audio/tts/customization`,
+    {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${config.bailianApiKey.trim()}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ model: "voice-enrollment", input }),
+      signal: AbortSignal.timeout(60_000),
+    },
+  );
+  let data: CustomizationResponse | undefined;
+  try {
+    data = (await response.json()) as CustomizationResponse;
+  } catch {
+    data = undefined;
+  }
+  if (!response.ok) {
+    throw new Error(
+      `音色复刻请求失败：HTTP ${response.status}${data?.message ? `，${data.message}` : ""}`,
+    );
+  }
+  return data ?? {};
+}
+
+/** 跑 ffmpeg 并返回 stderr（音量检测用） */
+function runFfmpegCapture(args: string[]): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const proc = spawn(resolveFfmpegPath(), args, {
+      stdio: ["ignore", "ignore", "pipe"],
+    });
+    let stderr = "";
+    proc.stderr.on("data", (chunk: Buffer) => {
+      stderr += chunk.toString();
+    });
+    proc.on("error", reject);
+    proc.on("close", (code) => {
+      if (code === 0) {
+        resolve(stderr);
+      } else {
+        reject(new Error(`ffmpeg 执行失败：${stderr.slice(-300)}`));
+      }
+    });
+  });
+}
+
+/**
+ * 样本统一转成 WAV（16-bit / 16kHz 单声道，最长取前 30 秒）再编码成 Data URI。
+ * 复刻服务端要先对样本做语音识别：太短（<5 秒）或几乎没声都会在那一步失败，
+ * 所以发送前先在本地校验时长与音量，不合格直接报明确原因。
+ */
+async function prepareCloneSampleDataUri(
+  rawPath: string,
+  outDir: string,
+): Promise<string> {
+  const wavPath = join(outDir, `clone-sample-${randomUUID()}.wav`);
+  await runFfmpeg([
+    "-y",
+    "-i",
+    rawPath,
+    "-vn",
+    "-t",
+    "30",
+    "-ar",
+    "16000",
+    "-ac",
+    "1",
+    "-codec:a",
+    "pcm_s16le",
+    wavPath,
+  ]);
+  const durationMs = await probeDurationMs(wavPath);
+  if (durationMs < 5000) {
+    throw new Error(
+      `声音样本太短（只有 ${(durationMs / 1000).toFixed(1)} 秒）：请对着范文完整念一遍，至少 10 秒`,
+    );
+  }
+  const stats = await runFfmpegCapture([
+    "-i",
+    wavPath,
+    "-af",
+    "volumedetect",
+    "-f",
+    "null",
+    "-",
+  ]);
+  const meanMatch = stats.match(/mean_volume:\s*(-?[\d.]+) dB/);
+  if (meanMatch && Number(meanMatch[1]) < -50) {
+    throw new Error("录音几乎没有声音：请检查麦克风，或离麦克风近一点重录");
+  }
+  const bytes = await readFile(wavPath);
+  return `data:audio/wav;base64,${bytes.toString("base64")}`;
+}
+
+/**
+ * 创建复刻音色：样本（文件路径或录音 base64）→ 创建 → 轮询到 OK。
+ * 音色绑定当前 TTS 模型，创建免费；返回的 voice_id 之后当普通音色用。
+ */
+export async function createClonedVoice(
+  config: AppConfig,
+  args: { prefix: string; sourcePath?: string; dataBase64?: string },
+  outDir: string,
+): Promise<{ voiceId: string }> {
+  if (!config.bailianApiKey.trim()) {
+    throw new Error("请先在配置中心填写百炼 API Key");
+  }
+  await mkdir(outDir, { recursive: true });
+  let rawPath = "";
+  if (args.sourcePath) {
+    rawPath = args.sourcePath;
+  } else if (args.dataBase64) {
+    rawPath = join(outDir, `clone-rec-${randomUUID()}.webm`);
+    await writeFile(rawPath, Buffer.from(args.dataBase64, "base64"));
+  } else {
+    throw new Error("没有收到声音样本");
+  }
+  const prefix =
+    args.prefix.replace(/[^a-zA-Z0-9]/g, "").slice(0, 10) || "myvoice";
+  const audio = await prepareCloneSampleDataUri(rawPath, outDir);
+  const created = await postCustomization(config, {
+    action: "create_voice",
+    target_model: config.bailianTtsModel,
+    prefix,
+    audio,
+    language_hints: ["zh"],
+  });
+  const voiceId = created.output?.voice_id;
+  if (!voiceId) {
+    throw new Error(
+      created.output?.message || created.message || "创建音色未返回 voice_id",
+    );
+  }
+  const deadline = Date.now() + 90_000;
+  for (;;) {
+    const queried = await postCustomization(config, {
+      action: "query_voice",
+      voice_id: voiceId,
+    });
+    const status = queried.output?.status;
+    if (status === "OK") break;
+    if (status && status !== "DEPLOYING") {
+      throw new Error(`音色创建状态异常：${status}`);
+    }
+    if (Date.now() > deadline) {
+      throw new Error("音色创建超时，请稍后再试");
+    }
+    await new Promise((resolve) => setTimeout(resolve, 2000));
+  }
+  logInfo("bailian-tts", `复刻音色创建完成 ${voiceId}`);
+  return { voiceId };
 }
 
 /** 把逐句音频按顺序拼成完整旁白（同参数 mp3 直接流拷贝拼接） */

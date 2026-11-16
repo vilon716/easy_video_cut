@@ -43,6 +43,68 @@ function currentSubtitleTemplateId(): string {
   }
 }
 
+/**
+ * 长句字幕切分：一整句糊成一大块很难看，按标点切成 ≤12 字的短段，
+ * 每段时长按字数比例从整句时长里分。配音/混剪仍按整句走，不受影响。
+ */
+function splitLongSegment(
+  text: string,
+  start: number,
+  end: number,
+): { start: number; end: number; text: string }[] {
+  const MAX_CHARS = 12;
+  const trimmed = text.trim();
+  if (trimmed.length <= MAX_CHARS) {
+    return [{ start, end, text: trimmed }];
+  }
+  // 先按逗号等标点切成短语（标点留在前一段末尾）
+  const phrases = trimmed.split(/(?<=[，、；：。！？…])\s*/).filter(Boolean);
+  const chunks: string[] = [];
+  let current = "";
+  const pushCurrent = () => {
+    if (current) {
+      chunks.push(current);
+      current = "";
+    }
+  };
+  for (const phrase of phrases) {
+    if (phrase.length > MAX_CHARS) {
+      pushCurrent();
+      for (let i = 0; i < phrase.length; i += MAX_CHARS) {
+        chunks.push(phrase.slice(i, i + MAX_CHARS));
+      }
+    } else if ((current + phrase).length <= MAX_CHARS) {
+      current += phrase;
+    } else {
+      pushCurrent();
+      current = phrase;
+    }
+  }
+  pushCurrent();
+  // 纯标点的碎片并回上一段，避免单独一段只有一个顿号
+  for (let i = chunks.length - 1; i > 0; i--) {
+    if (/^[，、；：。！？…]+$/.test(chunks[i])) {
+      chunks[i - 1] += chunks[i];
+      chunks.splice(i, 1);
+    }
+  }
+  if (!chunks.length) {
+    return [{ start, end, text: trimmed }];
+  }
+  const totalChars = chunks.reduce((sum, chunk) => sum + chunk.length, 0);
+  const duration = end - start;
+  let cursor = start;
+  return chunks.map((chunk, index) => {
+    const segEnd =
+      index === chunks.length - 1
+        ? end
+        : cursor + duration * (chunk.length / totalChars);
+    const segment = { start: cursor, end: segEnd, text: chunk };
+    cursor = segEnd;
+    return segment;
+  });
+}
+
 function buildSrt(subtitles: SubtitleSegment[]): string {
   return subtitles
     .map(
@@ -120,12 +182,20 @@ function useSubtitleRecognitionImpl() {
     try {
       // 成片带片头时，旁白被整体后移，字幕时间轴同步偏移
       const offsetSec = finalVideo.introOffsetMs.value / 1000;
-      subtitleList.value = tts.timings.value.map((timing, index) => ({
-        id: `segment-${index + 1}`,
-        start: timing.startMs / 1000 + offsetSec,
-        end: (timing.startMs + timing.durationMs) / 1000 + offsetSec,
-        text: timing.text,
-      }));
+      // 长句切成短段轮着显示（一句一段会糊满屏）；双语模板要整句翻译，不切
+      const shouldSplit = currentSubtitleTemplateId() !== "bilingual";
+      const segments: SubtitleSegment[] = [];
+      for (const timing of tts.timings.value) {
+        const start = timing.startMs / 1000 + offsetSec;
+        const end = (timing.startMs + timing.durationMs) / 1000 + offsetSec;
+        const parts = shouldSplit
+          ? splitLongSegment(timing.text, start, end)
+          : [{ start, end, text: timing.text.trim() }];
+        for (const part of parts) {
+          segments.push({ id: `segment-${segments.length + 1}`, ...part });
+        }
+      }
+      subtitleList.value = segments;
       subtitleMergedText.value = formatSubtitlesText(subtitleList.value);
       subtitleRequestId.value = "";
       subtitleSrt.value = buildSrt(subtitleList.value);

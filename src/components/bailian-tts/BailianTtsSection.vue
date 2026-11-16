@@ -31,6 +31,7 @@ const {
   synthesizeAll,
   synthesizeSentence,
   resetAiSynthesis,
+  importFullNarration,
   importUserAudioFor,
   saveRecordingFor,
 } = useBailianTts()
@@ -56,6 +57,8 @@ const currentVoiceId = computed(() => appConfig.config.value.bailianTtsVoice)
 const currentVoiceLabel = computed(() => {
   const id = currentVoiceId.value
   if (!id) return '未设置音色'
+  const cloned = appConfig.config.value.clonedVoices.find((v) => v.id === id)
+  if (cloned) return `${cloned.name} · 我的音色`
   return findTtsVoice(id) ? ttsVoiceLabel(id) : `自定义 · ${id}`
 })
 
@@ -85,10 +88,12 @@ const filteredCount = computed(() =>
   filteredGroups.value.reduce((sum, section) => sum + section.voices.length, 0),
 )
 
-/** 当前音色若不在名单内（配置中心手填的复刻音色等），在面板顶部单独成行 */
+/** 当前音色若不在名单内（配置中心手填的音色 ID 等），在面板顶部单独成行 */
 const customVoice = computed(() => {
   const id = currentVoiceId.value
-  return id && !findTtsVoice(id) ? id : ''
+  if (!id || findTtsVoice(id)) return ''
+  if (appConfig.config.value.clonedVoices.some((v) => v.id === id)) return ''
+  return id
 })
 
 const PREVIEW_TEXT_ZH = '大家好，这是一段音色试听，选我来为你的视频配音吧。'
@@ -140,6 +145,133 @@ async function selectVoice(next: string): Promise<void> {
     ElMessage.info('音色已切换，之前的 AI 配音已清空，请重新逐句合成（自己的录音不受影响）')
   } else {
     ElMessage.success('音色已切换')
+  }
+}
+
+// ===== 声音复刻：念一段样本，存成专属音色 =====
+const cloneModalOpen = ref(false)
+
+function openCloneModal(): void {
+  pickerOpen.value = false
+  cloneModalOpen.value = true
+}
+const cloneName = ref('')
+const cloneFilePath = ref('')
+const cloneFileName = ref('')
+const cloneBlob = ref<Blob | null>(null)
+const isCloning = ref(false)
+const cloneRecording = ref(false)
+let cloneRecorder: MediaRecorder | null = null
+let cloneStream: MediaStream | null = null
+let cloneChunks: Blob[] = []
+
+const CLONE_SAMPLE_TEXT =
+  '大家好，我是老彭。做短视频这几年，我最大的体会就是：工具再顺手，也得内容过硬。今天这条视频，我就把自己常用的方法，一步一步讲给你听。'
+
+async function startCloneRecording(): Promise<void> {
+  if (cloneRecording.value) return
+  try {
+    cloneStream = await navigator.mediaDevices.getUserMedia({ audio: true })
+  } catch {
+    ElMessage.error('打不开麦克风：请在系统设置里允许本软件使用麦克风')
+    return
+  }
+  cloneChunks = []
+  cloneRecorder = new MediaRecorder(cloneStream)
+  cloneRecorder.ondataavailable = (event) => {
+    if (event.data.size) cloneChunks.push(event.data)
+  }
+  cloneRecorder.onstop = () => {
+    cloneBlob.value = new Blob(cloneChunks, {
+      type: cloneRecorder?.mimeType || 'audio/webm',
+    })
+    cloneFilePath.value = ''
+    cloneFileName.value = ''
+    cloneStream?.getTracks().forEach((track) => track.stop())
+    cloneStream = null
+    cloneRecorder = null
+    cloneRecording.value = false
+  }
+  cloneRecording.value = true
+  cloneRecorder.start()
+}
+
+function stopCloneRecording(): void {
+  if (cloneRecorder && cloneRecorder.state !== 'inactive') {
+    cloneRecorder.stop()
+  }
+}
+
+async function pickCloneSample(): Promise<void> {
+  const path = await window.desktopApi.selectAudioFile()
+  if (!path) return
+  cloneFilePath.value = path
+  cloneFileName.value = path.split(/[\\/]/).pop() ?? path
+  cloneBlob.value = null
+}
+
+async function blobToBase64(blob: Blob): Promise<string> {
+  const buffer = await blob.arrayBuffer()
+  const bytes = new Uint8Array(buffer)
+  let binary = ''
+  const CHUNK = 0x8000
+  for (let i = 0; i < bytes.length; i += CHUNK) {
+    binary += String.fromCharCode(...bytes.subarray(i, i + CHUNK))
+  }
+  return btoa(binary)
+}
+
+async function submitClone(): Promise<void> {
+  if (isCloning.value) return
+  const name = cloneName.value.trim()
+  if (!name) {
+    ElMessage.warning('先给音色起个名字')
+    return
+  }
+  if (!appConfig.isLoaded.value) await appConfig.refreshConfig()
+  if (!appConfig.hasBailianKey.value) {
+    ElMessage.warning('请先在配置中心填写百炼 API Key')
+    return
+  }
+  if (!cloneFilePath.value && !cloneBlob.value) {
+    ElMessage.warning('先录一段样本，或上传一个样本文件')
+    return
+  }
+  isCloning.value = true
+  try {
+    const payload: {
+      prefix: string
+      sourcePath?: string
+      dataBase64?: string
+    } = { prefix: ('pg' + Date.now().toString(36)).slice(0, 10) }
+    if (cloneFilePath.value) {
+      payload.sourcePath = cloneFilePath.value
+    } else if (cloneBlob.value) {
+      payload.dataBase64 = await blobToBase64(cloneBlob.value)
+    }
+    const result = await window.desktopApi.createBailianCloneVoice(payload)
+    const voiceId = (result as { voiceId?: unknown })?.voiceId
+    if (typeof voiceId !== 'string' || !voiceId) {
+      throw new Error('创建结果异常')
+    }
+    await appConfig.saveConfig({
+      ...appConfig.config.value,
+      clonedVoices: [
+        ...appConfig.config.value.clonedVoices,
+        { id: voiceId, name },
+      ],
+    })
+    cloneModalOpen.value = false
+    cloneBlob.value = null
+    cloneFilePath.value = ''
+    cloneFileName.value = ''
+    cloneName.value = ''
+    ElMessage.success(`音色「${name}」创建成功，已自动选上`)
+    await selectVoice(voiceId)
+  } catch (error) {
+    ElMessage.error(error instanceof Error ? error.message : '音色创建失败')
+  } finally {
+    isCloning.value = false
   }
 }
 
@@ -264,6 +396,14 @@ function statusLabel(status: TtsSentenceState['status']): string {
         >
           {{ previewingId === currentVoiceId ? '生成中…' : '试听' }}
         </button>
+        <button
+          class="ui-ai-btn"
+          type="button"
+          :disabled="isSynthesizing"
+          @click="openCloneModal"
+        >
+          复刻我的声音
+        </button>
       </div>
 
       <audio
@@ -299,6 +439,14 @@ function statusLabel(status: TtsSentenceState['status']): string {
         </button>
         <span v-if="sentences.length" class="tts-mine-progress">
           已就位 {{ doneCount }} / {{ sentences.length }} 句
+        </span>
+      </div>
+      <div class="mine-full-row">
+        <button type="button" class="ui-ai-btn" @click="importFullNarration">
+          选择整段录音（一整段配好音的选这个）
+        </button>
+        <span class="mine-full-hint">
+          在外面录好一整段旁白，选这一个文件就行，自动按句切开；切分按字数估算，个别句子想重录，用下面每句的按钮补。
         </span>
       </div>
     </template>
@@ -435,6 +583,38 @@ function statusLabel(status: TtsSentenceState['status']): string {
           ></audio>
 
           <div class="voice-picker-list">
+            <button type="button" class="clone-entry" @click="openCloneModal">
+              ＋ 复刻我的声音（念 20 秒，存成专属音色）
+            </button>
+            <div
+              v-if="appConfig.config.value.clonedVoices.length"
+              class="voice-picker-section"
+            >
+              <p class="voice-picker-section-title">我的音色</p>
+              <div
+                v-for="voice in appConfig.config.value.clonedVoices"
+                :key="voice.id"
+                class="voice-row"
+                :class="{ 'is-current': voice.id === currentVoiceId }"
+                @click="selectVoice(voice.id)"
+              >
+                <span class="voice-row-main">
+                  <span class="voice-row-name">{{ voice.name }}</span>
+                  <span class="voice-row-tags">复刻音色 · 绑定当前模型</span>
+                </span>
+                <span v-if="voice.id === currentVoiceId" class="voice-row-current">
+                  当前
+                </span>
+                <button
+                  type="button"
+                  class="ui-ai-btn voice-row-preview"
+                  :disabled="!!previewingId"
+                  @click.stop="previewVoice(voice.id)"
+                >
+                  {{ previewingId === voice.id ? '生成中…' : '试听' }}
+                </button>
+              </div>
+            </div>
             <div v-if="customVoice" class="voice-picker-section">
               <p class="voice-picker-section-title">当前自定义音色</p>
               <div class="voice-row is-current">
@@ -481,6 +661,80 @@ function statusLabel(status: TtsSentenceState['status']): string {
                   {{ previewingId === voice.id ? '生成中…' : '试听' }}
                 </button>
               </div>
+            </div>
+          </div>
+        </section>
+      </div>
+    </teleport>
+    <teleport to="body">
+      <div v-if="cloneModalOpen" class="voice-picker-backdrop" @click.self="cloneModalOpen = false">
+        <section class="voice-picker clone-modal" role="dialog" aria-modal="true" aria-label="复刻我的声音">
+          <header class="voice-picker-header">
+            <h3>复刻我的声音</h3>
+            <button type="button" class="voice-picker-close" aria-label="关闭" @click="cloneModalOpen = false">
+              ×
+            </button>
+          </header>
+          <div class="clone-form">
+            <p class="clone-form-hint">
+              念 10–20 秒就行：安静环境、正常语速、不要背景音乐。创建免费，音色存在你的百炼账号里，之后每条视频都能用它自动配音。
+            </p>
+            <label class="clone-field">
+              <span>音色名</span>
+              <input
+                v-model="cloneName"
+                class="ui-input"
+                type="text"
+                placeholder="如：老彭本音"
+                maxlength="20"
+              />
+            </label>
+            <div class="clone-field">
+              <span>声音样本</span>
+              <div class="clone-sample-actions">
+                <button
+                  v-if="!cloneRecording"
+                  type="button"
+                  class="ui-ai-btn"
+                  @click="startCloneRecording"
+                >
+                  ● 开始录音
+                </button>
+                <button
+                  v-else
+                  type="button"
+                  class="ui-ai-btn clone-stop"
+                  @click="stopCloneRecording"
+                >
+                  ■ 停止录音
+                </button>
+                <button type="button" class="ui-mini-btn" @click="pickCloneSample">
+                  上传样本文件
+                </button>
+                <span v-if="cloneBlob" class="clone-sample-state">已录好样本 ✓</span>
+                <span v-else-if="cloneFileName" class="clone-sample-state">
+                  {{ cloneFileName }}
+                </span>
+              </div>
+              <p class="clone-sample-text">照着念：{{ CLONE_SAMPLE_TEXT }}</p>
+            </div>
+            <div class="clone-form-actions">
+              <button
+                type="button"
+                class="secondary-button"
+                :disabled="isCloning"
+                @click="cloneModalOpen = false"
+              >
+                取消
+              </button>
+              <button
+                type="button"
+                class="primary-button"
+                :disabled="isCloning"
+                @click="submitClone"
+              >
+                {{ isCloning ? '创建中（约半分钟）…' : '开始复刻' }}
+              </button>
             </div>
           </div>
         </section>
@@ -597,6 +851,19 @@ function statusLabel(status: TtsSentenceState['status']): string {
   color: #64748b;
   font-size: 12px;
   line-height: 1.7;
+}
+
+.mine-full-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.mine-full-hint {
+  color: #64748b;
+  font-size: 12px;
+  line-height: 1.6;
 }
 
 .tts-mine-progress {
@@ -893,5 +1160,90 @@ function statusLabel(status: TtsSentenceState['status']): string {
 
 .voice-row-preview {
   flex: none;
+}
+
+/* ===== 声音复刻 ===== */
+.clone-entry {
+  width: 100%;
+  height: 34px;
+  border: 1px dashed #2a6f97;
+  border-radius: 10px;
+  background: #eef5fb;
+  color: #2a6f97;
+  font-size: 13px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.clone-entry:hover {
+  background: #e3eff8;
+}
+
+.clone-form {
+  display: grid;
+  gap: 12px;
+  overflow-y: auto;
+}
+
+.clone-form-title {
+  margin: 0;
+  color: #18212f;
+  font-size: 14px;
+  font-weight: 700;
+}
+
+.clone-form-hint {
+  margin: 0;
+  color: #64748b;
+  font-size: 12px;
+  line-height: 1.7;
+}
+
+.clone-field {
+  display: grid;
+  gap: 6px;
+  color: #29435f;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.clone-field .ui-input {
+  height: 32px;
+}
+
+.clone-sample-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.clone-stop {
+  border-color: #f0c6bd;
+  background: #fdf0ec;
+  color: #d9694f;
+}
+
+.clone-sample-state {
+  color: #2a7d4f;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.clone-sample-text {
+  margin: 0;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: #f8fbfd;
+  color: #41546b;
+  font-size: 12px;
+  font-weight: 400;
+  line-height: 1.7;
+}
+
+.clone-form-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
 }
 </style>

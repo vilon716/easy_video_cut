@@ -32,6 +32,15 @@ declare global {
       saveBailianRecording: (payload: {
         dataBase64: string;
       }) => Promise<unknown>;
+      importBailianFullNarration: (payload: {
+        sourcePath: string;
+        sentences: string[];
+      }) => Promise<unknown>;
+      createBailianCloneVoice: (payload: {
+        prefix: string;
+        sourcePath?: string;
+        dataBase64?: string;
+      }) => Promise<unknown>;
       concatBailianNarration: (payload: {
         fileNames: string[];
       }) => Promise<unknown>;

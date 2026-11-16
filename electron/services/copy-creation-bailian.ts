@@ -14,6 +14,10 @@ import type { AppConfig} from "./app-config";
 export interface BailianCopyCreationPayload {
 rewriteRequirements: string;
 sourceCopy: string;
+/** 文案风格 ID（见 COPY_STYLE_BLOCKS；空/未知 = 默认洗稿） */
+styleId?: string;
+/** AI 选题模式：给出一句话选题时走选题模板（忽略 sourceCopy） */
+topic?: string;
 }
 
 export interface BailianCopyCreationResult {
@@ -44,6 +48,55 @@ message?: string;
 code?: string;
 }
 
+/**
+ * 文案风格模式（方法论提炼成提示块，挂在改写要求之后；
+ * 与【改写要求】冲突时以改写要求为准）。ID 与渲染层 config/copy-styles 对应。
+ */
+export const COPY_STYLE_BLOCKS: Record<string, { name: string; block: string }> = {
+hook: {
+name: "爆款开头",
+block: `- 第一句话必须让陌生人愿意多停两秒：直接说观众正在遇到的问题、想得到的结果，或把观众心里正防着的那句话替他说出来（比如“肯定又有坑吧”）。不要以“我”的经历开场，自己的经历放后面当证据。
+- 第一句尽量信息密集：一句里同时给出付出、结果或反差中的两样，但每个点都要一听就懂。
+- 严禁画饼式开头（“学会这个能省几万”“零基础月入过万”）和自嗨式设问（“为什么我今天非要讲这个”）。承诺必须比后面的证据小一号。
+- 开头抛出的期待，紧接着的一两句必须用具体事件、数据或演示兑现，不许悬空。
+- 结尾给观众一个明确的关注理由（后面还有什么真实的东西），一句收尾，干脆结束，不拖互动话术。`,
+},
+tutorial: {
+name: "干货教程",
+block: `- 按“钩子 → 证据 → 承诺 → 条件 → 指令”组织：先一句话说清学会后能干什么，再给一个马上能验证的证据或演示，然后说清能达到的效果、真实门槛出现在哪一步，最后给出第一步具体怎么做。
+- 做减法：一到两个关键点讲透，不罗列一堆工具和名词；删掉不服务主题的信息。
+- 举例只选目标观众最常见的那个处境，让人一看就觉得“说的就是我”。
+- 全程让观众觉得“有手就会”：步骤具体、门槛低；必要的难点不藏着，提前说清卡住时怎么办。`,
+},
+story: {
+name: "故事记录",
+block: `- 按“事件 → 行动 → 变化”推进：先讲发生了什么具体的事，再讲做了什么，最后讲带来了什么变化或结果。
+- 用具体细节让观众自己得出结论，不直白说教，不喊口号，不总结大道理。
+- 只写原文里真实有的经历和事实，不编造情节、对话和数字；原文没有的转折不要硬加。
+- 情绪跟着事件走，平实讲述，结尾停在变化或结果上，不额外升华。`,
+},
+hotspot: {
+name: "热点判断",
+block: `- 结论先行：第一句就说这件事跟观众有什么关系、观众该怎么办，不把最有用的话留到最后。
+- 然后依次讲：这件事是什么（当证据用）→ 为什么会这样 → 以后可能怎样。判断要落到观众自己的行动上。
+- 只用原文给出的事实和数字，不编造日期、数据和出处；原文没说的背景不要补。
+- 不站队、不煽动对立，语气是帮观众做判断，不是吵架。`,
+},
+selling: {
+name: "带货转化",
+block: `- 先说观众的痛点或想要的结果，再引出产品或服务是怎么做到的，接着给真实证据（效果、过程、反馈，只能用原文里有的），最后自然承接：想要的人去哪里找、怎么联系，一句带过。
+- 不夸大功效，不承诺原文没有的结果，不编造销量、评价和价格。
+- 承接要具体、低门槛（先试用、先咨询、先看样品之类），不硬推销、不制造焦虑。`,
+},
+};
+
+function renderStyleBlock(styleId: string | undefined): string {
+if (!styleId) return "";
+const style = COPY_STYLE_BLOCKS[styleId];
+if (!style) return "";
+return `\n【文案风格：${style.name}】\n${style.block}\n（风格要求与【改写要求】冲突时，一律以【改写要求】为准。）\n`;
+}
+
 /** 公共 prompt 模板（与模力方舟版保持一致，保证改写风格不漂移） */
 const copyPromptTemplate = `你是一名短视频IP口播文案专家，请基于用户提供的原始文案进行二次创作。
 
@@ -51,6 +104,7 @@ const copyPromptTemplate = `你是一名短视频IP口播文案专家，请基�
 {{rewriteRequirements}}
 
 以上【改写要求】是本次创作最重要的指令，成品必须明显体现这些要求；当它与下方通用要求发生冲突时，一律以【改写要求】为准（"无"表示没有额外要求）。
+{{styleBlock}}
 
 输出要求非常重要：
 1. 只输出一段完整口播文案正文。
@@ -77,7 +131,36 @@ return copyPromptTemplate
 "{{rewriteRequirements}}",
 payload.rewriteRequirements.trim() || "无",
 )
+.replaceAll("{{styleBlock}}", renderStyleBlock(payload.styleId))
 .replaceAll("{{sourceCopy}}", payload.sourceCopy.trim());
+}
+
+/** AI 选题模板：一句话选题 → 原创口播文案（不依赖提取原文） */
+const topicPromptTemplate = `你是一名短视频IP口播文案专家，请围绕用户给出的一句话选题，创作一段可以直接口播的短视频文案。
+
+【选题】
+{{topic}}
+{{styleBlock}}
+输出要求非常重要：
+1. 只输出一段完整口播文案正文。
+2. 不要输出标题、开场钩子、完整口播文案、结尾引导等结构名。
+3. 不要使用 Markdown 标题、编号、小标题、项目符号、分隔线。
+4. 不要解释创作思路，不要给配图建议，不要给话题标签。
+5. 文案会直接进入语音合成，所以输出内容必须能被直接朗读。
+6. 可以自然分段，但每一段都必须是口播正文的一部分。
+
+创作目标：
+1. 紧扣选题展开，开头要有钩子，表达自然、有节奏，避免空泛鸡汤。
+2. 不编造不存在的事实、数据和案例细节；选题信息有限时，用通用的经验、判断和操作方法展开，不虚构具体数字、人物和事件。
+3. 篇幅约 200–400 字（约 1–2 分钟口播）。
+4. 结尾可以自然引导互动，但不要出现"结尾引导"这类标签。
+
+请直接输出最终口播文案正文。`;
+
+function renderTopicPrompt(payload: BailianCopyCreationPayload): string {
+return topicPromptTemplate
+.replaceAll("{{topic}}", (payload.topic ?? "").trim())
+.replaceAll("{{styleBlock}}", renderStyleBlock(payload.styleId));
 }
 
 const LEADING_LABELS = [
@@ -163,13 +246,14 @@ const apiKey = config.bailianApiKey.trim();
 if (!apiKey) {
 throw new Error("请先在配置中心填写百炼 API Key");
 }
-if (!payload.sourceCopy.trim()) {
+const isTopicMode = Boolean(payload.topic?.trim());
+if (!isTopicMode && !payload.sourceCopy.trim()) {
 throw new Error("请先完成第一步提取文案");
 }
 
 const baseUrl = config.bailianBaseUrl.replace(/\/+$/, "");
 const url = `${baseUrl}/compatible-mode/v1/chat/completions`;
-const prompt = renderPrompt(payload);
+const prompt = isTopicMode ? renderTopicPrompt(payload) : renderPrompt(payload);
 
 // 空闲计时器：每收到一块数据就重置
 const idleController = new AbortController();

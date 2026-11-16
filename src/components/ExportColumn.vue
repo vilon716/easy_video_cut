@@ -808,7 +808,9 @@ async function buildCoverDataUrl(): Promise<string | null> {
       <!-- 内测说明与联系方式（原顶部横幅移至此处） -->
       <div class="beta-notice">
         <p class="beta-title">🧪 联系作者</p>
-        <p class="beta-desc">欢迎反馈Bug与建议，帮助我们持续优化。</p>
+        <p class="beta-desc">支持OEM贴牌、系统定制</p>
+        <p class="beta-desc">可定制功能、私有化部署</p>
+        <p class="beta-desc">欢迎反馈Bug和优化建议，帮助我们持续优化。</p>
         <p class="beta-contact">作者：老彭胡叨叨</p>
         <p class="beta-contact">微信：<span class="beta-wechat">PWL716</span></p>
       </div>

@@ -24,6 +24,26 @@ function useCopyCreationImpl() {
   const { openConfigCenter } = useMoarkAccount();
   const appConfig = useAppConfig();
   const rewriteRequirements = ref("");
+  /** 文案风格 ID（持久化到 localStorage，默认洗稿） */
+  const COPY_STYLE_STORAGE_KEY = "free-super-agent.copy-style";
+  const copyStyleId = ref(
+    (() => {
+      try {
+        return window.localStorage.getItem(COPY_STYLE_STORAGE_KEY) || "default";
+      } catch {
+        return "default";
+      }
+    })(),
+  );
+
+  function setCopyStyleId(id: string): void {
+    copyStyleId.value = id;
+    try {
+      window.localStorage.setItem(COPY_STYLE_STORAGE_KEY, id);
+    } catch {
+      // 存储不可用时仅保留内存状态
+    }
+  }
   const { createdCopyText: createdCopy } = useWorkflowState();
   const isCreatingCopy = ref(false);
   const isCopyCreationCancelled = ref(false);
@@ -63,7 +83,21 @@ function useCopyCreationImpl() {
     return {
       rewriteRequirements: rewriteRequirements.value,
       sourceCopy,
+      styleId: copyStyleId.value,
     };
+  }
+
+  /** 百炼 Key 前置检查（改写与选题两种创作共用） */
+  async function ensureBailianKey(): Promise<boolean> {
+    if (!appConfig.isLoaded.value) {
+      await appConfig.refreshConfig();
+    }
+    if (!appConfig.hasBailianKey.value) {
+      ElMessage.warning("请先在配置中心填写百炼 API Key");
+      openConfigCenter();
+      return false;
+    }
+    return true;
   }
 
   async function createRewriteCopy(sourceCopy: string): Promise<void> {
@@ -71,13 +105,7 @@ function useCopyCreationImpl() {
       return;
     }
 
-    // 文案创作走百炼：没填百炼 Key 时引导去配置中心（不再要求模力方舟授权）
-    if (!appConfig.isLoaded.value) {
-      await appConfig.refreshConfig();
-    }
-    if (!appConfig.hasBailianKey.value) {
-      ElMessage.warning("请先在配置中心填写百炼 API Key");
-      openConfigCenter();
+    if (!(await ensureBailianKey())) {
       return;
     }
 
@@ -86,15 +114,40 @@ function useCopyCreationImpl() {
       return;
     }
 
+    await runCreation(getPayload(sourceCopy));
+  }
+
+  /** AI 选题：一句话选题直接出文案（不用抖音链接），结果同样进文案创作 */
+  async function createFromTopic(topic: string): Promise<void> {
+    if (isCreatingCopy.value) {
+      return;
+    }
+
+    if (!(await ensureBailianKey())) {
+      return;
+    }
+
+    if (!topic.trim()) {
+      ElMessage.warning("先写一句话选题");
+      return;
+    }
+
+    await runCreation({
+      rewriteRequirements: "",
+      sourceCopy: "",
+      styleId: copyStyleId.value,
+      topic: topic.trim(),
+    });
+  }
+
+  async function runCreation(payload: CopyCreationPayload): Promise<void> {
     isCopyCreationCancelled.value = false;
     isCreatingCopy.value = true;
     createdCopy.value = "";
     startCreationTimer();
 
     try {
-      const result = await window.desktopApi.createRewriteCopy(
-        getPayload(sourceCopy),
-      );
+      const result = await window.desktopApi.createRewriteCopy(payload);
 
       if (isCopyCreationCancelled.value) {
         return;
@@ -141,11 +194,14 @@ function useCopyCreationImpl() {
   });
 
   return {
+    copyStyleId,
     createdCopy,
     creationElapsedText,
+    createFromTopic,
     createRewriteCopy,
     isCreatingCopy,
     rewriteRequirements,
+    setCopyStyleId,
     stopCopyCreation,
   };
 }

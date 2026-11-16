@@ -33,6 +33,17 @@ const desktopApi = {
     dataBase64: string;
   }): Promise<unknown> =>
     ipcRenderer.invoke("bailian-tts:save-recording", payload),
+  importBailianFullNarration: (payload: {
+    sourcePath: string;
+    sentences: string[];
+  }): Promise<unknown> =>
+    ipcRenderer.invoke("bailian-tts:import-full", payload),
+  createBailianCloneVoice: (payload: {
+    prefix: string;
+    sourcePath?: string;
+    dataBase64?: string;
+  }): Promise<unknown> =>
+    ipcRenderer.invoke("bailian-voice:create-clone", payload),
   concatBailianNarration: (payload: {
     fileNames: string[];
   }): Promise<unknown> => ipcRenderer.invoke("bailian-tts:concat", payload),

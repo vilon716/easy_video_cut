@@ -61,10 +61,11 @@ a {
 }
 
 .column-board {
-  min-width: calc(350px * 4 + 16px * 3);
+  /* 四列自适应窗口宽度：原来写死最小 1448px，窗口稍窄就横向溢出、列被切 */
+  min-width: 0;
   min-height: 100%;
   display: grid;
-  grid-template-columns: repeat(4, minmax(350px, 1fr));
+  grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 16px;
 }
 
@@ -189,7 +190,7 @@ a {
 
   .column-board {
     gap: 10px;
-    min-width: calc(400px * 4 + 10px * 3);
+    min-width: 0;
   }
 }
 

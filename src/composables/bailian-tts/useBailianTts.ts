@@ -308,6 +308,32 @@ function useImpl() {
     }
   }
 
+  /** 「我的配音」：导入一整段录好的旁白，按字数比例自动切分到每一句 */
+  async function importFullNarration(): Promise<void> {
+    if (!sentences.value.length) {
+      ElMessage.warning("先点「载入文案分句」");
+      return;
+    }
+    const sourcePath = await window.desktopApi.selectAudioFile();
+    if (!sourcePath) return;
+    try {
+      const result = await window.desktopApi.importBailianFullNarration({
+        sourcePath,
+        sentences: sentences.value.map((row) => row.text),
+      });
+      if (!Array.isArray(result) || result.length !== sentences.value.length) {
+        throw new Error("整段录音处理结果异常");
+      }
+      for (let i = 0; i < sentences.value.length; i++) {
+        await attachUserAudio(i, result[i]);
+      }
+    } catch (error) {
+      ElMessage.error(
+        error instanceof Error ? error.message : "整段录音导入失败",
+      );
+    }
+  }
+
   /** 「我的配音」：把软件内录好的音频（Blob）保存到某一句 */
   async function saveRecordingFor(index: number, blob: Blob): Promise<void> {
     const row = sentences.value[index];
@@ -349,6 +375,7 @@ function useImpl() {
     synthesizeSentence,
     resetSynthesis,
     resetAiSynthesis,
+    importFullNarration,
     importUserAudioFor,
     saveRecordingFor,
   };

@@ -106,6 +106,8 @@ import {
 } from "./services/copy-creation-bailian";
 import {
   concatNarrationAudio,
+  createClonedVoice,
+  importFullNarration,
   importUserAudioFile,
   saveRecordedAudio,
   synthesizeAllSentences,
@@ -637,6 +639,26 @@ app.whenReady().then(() => {
     "bailian-tts:save-recording",
     async (_event, payload: { dataBase64: string }) =>
       saveRecordedAudio(payload.dataBase64, getSynthesizedAudioDir()),
+  );
+  ipcMain.handle(
+    "bailian-tts:import-full",
+    async (_event, payload: { sourcePath: string; sentences: string[] }) =>
+      importFullNarration(
+        payload.sourcePath,
+        payload.sentences ?? [],
+        getSynthesizedAudioDir(),
+      ),
+  );
+  // ===== 声音复刻：用一段样本在百炼账号下创建专属音色 =====
+  ipcMain.handle(
+    "bailian-voice:create-clone",
+    async (
+      _event,
+      payload: { prefix: string; sourcePath?: string; dataBase64?: string },
+    ) => {
+      const config = await loadAppConfig();
+      return createClonedVoice(config, payload, getSynthesizedAudioDir());
+    },
   );
   ipcMain.handle(
     "bailian-tts:concat",

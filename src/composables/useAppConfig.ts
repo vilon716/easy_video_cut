@@ -6,6 +6,11 @@
  */
 import { computed, ref } from "vue";
 
+export interface ClonedVoiceState {
+  id: string;
+  name: string;
+}
+
 export interface AppConfigState {
   bailianApiKey: string;
   bailianBaseUrl: string;
@@ -17,6 +22,7 @@ export interface AppConfigState {
   coverrApiKey: string;
   bgmDir: string;
   materialsDir: string;
+  clonedVoices: ClonedVoiceState[];
 }
 
 export const APP_CONFIG_DEFAULTS: AppConfigState = {
@@ -31,6 +37,7 @@ export const APP_CONFIG_DEFAULTS: AppConfigState = {
   coverrApiKey: "",
   bgmDir: "",
   materialsDir: "",
+  clonedVoices: [],
 };
 
 let sharedState: ReturnType<typeof useImpl> | null = null;
@@ -73,8 +80,26 @@ function useImpl() {
   async function saveConfig(next: AppConfigState): Promise<void> {
     isSaving.value = true;
     try {
-      await window.desktopApi.saveAppConfig({ ...next });
-      config.value = { ...next };
+      // 过 IPC 前逐字段转成纯对象：config 是响应式对象，嵌套的
+      // clonedVoices 元素会带 Proxy，直接传会报 "An object could not be cloned"
+      const plain: AppConfigState = {
+        bailianApiKey: next.bailianApiKey,
+        bailianBaseUrl: next.bailianBaseUrl,
+        bailianTextModel: next.bailianTextModel,
+        bailianTtsModel: next.bailianTtsModel,
+        bailianTtsVoice: next.bailianTtsVoice,
+        pexelsApiKey: next.pexelsApiKey,
+        pixabayApiKey: next.pixabayApiKey,
+        coverrApiKey: next.coverrApiKey,
+        bgmDir: next.bgmDir,
+        materialsDir: next.materialsDir,
+        clonedVoices: (next.clonedVoices ?? []).map((voice) => ({
+          id: voice.id,
+          name: voice.name,
+        })),
+      };
+      await window.desktopApi.saveAppConfig(plain);
+      config.value = plain;
     } finally {
       isSaving.value = false;
     }
